@@ -1,0 +1,204 @@
+Create an orchestration that does the following:
+
+This protocol, which we will call MAPS (Multi-Agent Predictive Specification), leverages the principles of Hierarchical Predictive Processing (HPP). In this framework, the "World Model" acts as the Prior (top-down prediction), and the "Escalation" acts as the Prediction Error (bottom-up signal) that forces the higher-level agent to update its internal state.
+
+The MAPS Protocol Design Principles
+Frontmatter for Agents: Uses YAML frontmatter for strict schema validation by LLM agents.
+
+Markdown for Humans: Uses structured Markdown headers for readability and debugging.
+
+Active Inference: The world model is not just a summary; it is a set of testable predictions about what the child agent will encounter.
+
+File Format 1: handoff.md
+This file is the "top-down" message. It defines the reality the child is expected to operate within and the boundaries of that reality.
+
+Markdown
+---
+protocol_version: 1.0
+message_type: handoff
+id: "HO-552-891"
+timestamp: 2024-05-20T10:00:00Z
+requestor: "Architect_Agent"
+recipient: "Data_Retrieval_Agent"
+priority: "high"
+---
+
+# 1. The Request
+**Goal:** Retrieve the Q3 financial performance metrics for "Project X".
+**Definition of Done:** A JSON object containing revenue, churn, and burn rate.
+
+# 2. The World Model (Priors)
+*The following are the assumptions upon which this request is built. If these are false, the request is likely invalid.*
+
+- **Assumption A:** Project X data is stored in the `legacy_finance` database.
+- **Assumption B:** The database schema has not changed since the last sync (April 1st).
+- **Assumption C:** The API key `FIN_SEC_99` has read-level permissions for this table.
+- **Context:** We are preparing this for the board meeting; speed is prioritized over 100% precision in decimal points.
+
+# 3. Escalation Rules (Error Thresholds)
+*Trigger an `escalation.md` if any of the following "Prediction Errors" occur:*
+
+1. **Missing Access:** If `FIN_SEC_99` returns a 403 or 401 error.
+2. **Schema Mismatch:** If the `revenue` field is missing or renamed.
+3. **Data Staleness:** If the most recent entry in the database is older than March 31st.
+4. **Significant Anomaly:** If total burn rate exceeds $500k/mo (this contradicts the Architect's current budget model).
+
+# 4. Resources & Constraints
+- Timeout: 30 seconds.
+- Max retries: 2.
+File Format 2: escalation.md
+This file is the "bottom-up" signal. It is generated when the child agent’s "sensory input" (the data it finds) conflicts with the "Prior" (the Parent's World Model).
+
+Markdown
+---
+protocol_version: 1.0
+message_type: escalation
+id: "ESC-992-110"
+parent_handoff_id: "HO-552-891"
+timestamp: 2024-05-20T10:02:15Z
+source_agent: "Data_Retrieval_Agent"
+target_agent: "Architect_Agent"
+error_type: "World_Model_Mismatch"
+---
+
+# 1. The Prediction Error
+**Summary:** The assumption that data is located in `legacy_finance` is no longer valid.
+
+# 2. Observed Reality vs. World Model
+| Feature | Expected (World Model) | Observed (Reality) |
+| :--- | :--- | :--- |
+| **Data Location** | `legacy_finance` database | Database is deprecated/read-only. |
+| **API Status** | `FIN_SEC_99` (Active) | `FIN_SEC_99` (Revoked/Expired) |
+| **Last Entry** | Post-March 31st | Last entry: Jan 15th |
+
+# 3. Evidence / Raw Logs
+> `ERROR: 410 Gone - The resource at 'legacy_finance/q3_metrics' has been permanently moved to 'cloud_fin_v2'.`
+
+# 4. Proposed Model Update
+*Based on the error, the child agent suggests the following update to the parent's world model:*
+
+- **Update 1:** Transition all finance queries to the `cloud_fin_v2` endpoint.
+- **Update 2:** Request new credentials for the OAuth2 flow; the old API keys are deprecated.
+
+# 5. Request for Instruction
+- [ ] Abort task.
+- [ ] Wait for parent to provide updated `handoff.md` with new credentials.
+- [ ] Child agent should attempt to self-correct using `cloud_fin_v2` with default perms.
+Implementation Logic for your Multi-Agent System
+1. The "Prior" Injection
+When the Parent calls the Child, it isn't just giving a command; it is transmitting a belief state. This forces the Parent to be explicit about why it thinks the task is possible.
+
+2. The "Surprise" Function
+The Child agent should be programmed with a "Surprise" check after every tool use or data retrieval step:
+
+Python
+def check_for_surprise(observation, world_model):
+    for assumption in world_model:
+        if deviation(observation, assumption) > threshold:
+            return generate_escalation(observation, assumption)
+3. Updating the Hierarchy
+In a tree structure, when an escalation.md reaches the Parent:
+
+The Parent pauses execution.
+
+The Parent assimilates the escalation (updates its own World Model).
+
+The Parent either:
+
+Corrects the handoff.md and sends it back down (Inference).
+
+Escalates further up the tree to its own Parent if the error invalidates the Parent's own assumptions (Hierarchical Error Propagation).
+
+Benefits of this Format
+Observability: You can trace exactly where an agent's "understanding" of the project failed.
+
+Reduced Hallucination: By forcing agents to define "Escalation Rules," you prevent them from "making it work" with bad data.
+
+Computational Efficiency: Agents don't need to pass the entire chat history; they only pass the refined model and the specific delta (the error).
+
+To complete the MAPS (Multi-Agent Predictive Specification) protocol, we need a "top-down" completion signal. In the language of cognitive science and predictive processing, if the handoff is the Prior and the escalation is the Prediction Error, then the result is the Posterior Update.
+
+This file confirms that the Child agent’s actions successfully "quenched" the prediction error of the Parent, providing the necessary data to update the Parent's state.
+
+File Format 3: result.md
+This file is generated when the child agent completes the request within the bounds of the provided World Model and Escalation Rules.
+
+Markdown
+---
+protocol_version: 1.0
+message_type: result
+id: "RES-221-440"
+parent_handoff_id: "HO-552-891"
+timestamp: 2024-05-20T10:05:00Z
+source_agent: "Data_Retrieval_Agent"
+target_agent: "Architect_Agent"
+status: "success"
+---
+
+# 1. Executive Summary
+**Task:** Retrieval of Q3 financial metrics for "Project X".
+**Outcome:** Task completed successfully. All requested metrics were located and validated against the world model.
+
+# 2. Delivered Artifacts
+*The primary data requested in the `handoff.md`.*
+
+```json
+{
+  "project_id": "Project-X",
+  "period": "2023-Q3",
+  "metrics": {
+    "revenue": 1250000,
+    "churn_rate": "2.4%",
+    "burn_rate": 310000
+  },
+  "currency": "USD",
+  "data_source": "legacy_finance.main_ledger"
+}
+3. Model Validation (Posterior)
+Feedback on the "World Model" provided in the handoff. This allows the Parent to refine its future priors.
+
+Assumption A (Location): Confirmed. Data was found in legacy_finance.
+
+Assumption B (Schema): Confirmed. No schema changes detected.
+
+Assumption C (Permissions): Confirmed. API key FIN_SEC_99 worked as expected.
+
+Accuracy Score: 100% (The world model was a perfect predictor of the environment).
+
+4. Contextual Metadata
+Observations that didn't trigger an escalation but are relevant for the Parent’s next steps.
+
+Latency: Query took 1.2s (slightly higher than the 0.8s average).
+
+Data Density: Found 450 line items contributing to the summary.
+
+Note: While the burn rate was within limits ($310k), it has been trending upward by 5% month-over-month.
+
+5. Resource Disposition
+API Calls Used: 1/2 retries.
+
+Tokens Consumed: ~150.
+
+Session State: Connection closed.
+
+
+---
+
+### How this completes the "Predictive Loop"
+
+1.  **Prediction (Handoff):** The Parent says, "I believe the world looks like *X*, so go do *Y*."
+2.  **Testing (Execution):** The Child acts as the "sensory organ," interacting with the environment (APIs, Databases, Tools) to see if *X* is true.
+3.  **Resolution:**
+    * **If Reality $\neq$ World Model:** The Child sends an **Escalation**, forcing the Parent to revise its belief system before trying again.
+    * **If Reality $=$ World Model:** The Child sends a **Result**, confirming the Parent's belief and providing the data requested.
+
+### Implementation Benefit: "Weighting the Prior"
+By including **Section 3: Model Validation** in the result, the Parent agent can track the "reliability" of its own internal models. 
+* If a Parent agent consistently receives results with **"Confirmed"** assumptions, its "Confidence Score" for that domain increases. 
+* If it frequently receives **Escalations**, it learns that its world model is "out of sync" with reality, and it can trigger a high-level "Re-indexing" or "Exploration" task to rebuild its understanding of the environment.
+
+To ensure the "Top-Down" prediction (the handoff) is high-fidelity, the Parent agent must act as a Bayesian filter—minimizing potential "Surprise" before the Child even begins.In Cognitive Science, this is known as Precision Weighting. The Parent needs to decide how much "weight" to give its own assumptions versus how much freedom to give the Child to explore.MAPS Parent Request ChecklistPhaseAction ItemCognitive/Systems Purpose1. IdentityVerify Recipient Specialization. Is this child the correct node for this specific abstraction?Ensures the "Tree" structure maintains functional modularity.2. The GoalDefine the "Posterior State". What specific change in the world or data state represents a "match" for your prediction?Sets the target for Active Inference.3. The PriorSurface Hidden Assumptions. Why do you think this will work? (e.g., "I assume the API is v2," "I assume the user is logged in.")Provides the "World Model" the child uses to detect prediction errors.4. SensitivityCalibrate Surprise Thresholds. At what point does a deviation become a "blocker" vs. a "minor detail"?Defines the Escalation Rules. Prevents "Infinite Loops" of minor error correction.5. ConstraintsBound the Search Space. What are the time, token, or financial limits?Prevents "Divergence" where a child spends too many resources on a false prior.6. VerificationProvide a "Validation Heuristic". How should the child verify their own result before sending the result.md?Implements a self-correction loop at the lower level.Implementation Guide: The "Pre-Flight" QuestionsBefore generating the handoff.md, the Parent agent should internally answer these three questions:The "If-Then" Test: "If the Child discovers that [Assumption X] is false, does my current plan immediately fail?"Action: If yes, [Assumption X] MUST be in the World Model and have a corresponding Escalation Rule.The "Ambiguity" Test: "Is there more than one way to interpret the 'Definition of Done'?"Action: Use the request field to specify the exact schema or format required for the result.md.The "Dependency" Test: "Am I asking a sibling agent for information simultaneously?"Action: STOP. The prompt assumes sequential execution. Ensure the result of the previous sibling is incorporated into this new handoff's World Model.Example: Parent Internal Monologue"I am requesting a code refactor. I assume the child has access to the /src directory. I assume the codebase is in Python 3.10. If the child finds out it's actually Legacy Python 2.7, that is a massive 'Prediction Error'—I need to know immediately because my refactoring plan is based on 3.10 syntax. I will set an Escalation Rule for 'Version Mismatch'."By following this checklist, you transform the Parent from a "task-giver" into a Model-Generator, which is the core of effective Multi-Agent Predictive Processing.Does this checklist align with the level of technical autonomy you want your agents to have, or should we add more "guardrails" regarding resource consumption?
+
+In the MAPS framework, an escalation is more than just a "bug report"—it is a Prediction Error signal. For the parent agent to successfully update its internal world model, the child must provide high-resolution data regarding the mismatch.The following checklist ensures the child agent acts as an effective "sensory organ," providing the parent with the necessary "surprisal" data to recalibrate the plan.MAPS Child Escalation ChecklistPhaseAction ItemCognitive/Systems Purpose1. CategorizationIdentify the Breach. Which specific Escalation Rule or World Model assumption was violated?Localizes the error within the parent's logic.2. Evidence GatheringCapture Raw "Sensory" Data. What are the exact logs, status codes, or strings that contradict the prior?Prevents "hallucinated" errors; provides the parent with Ground Truth.3. Contrast AnalysisQuantify the Delta. Clearly state: "You predicted X, but I observed Y."Explicitly defines the Prediction Error magnitude.4. Impact AssessmentDetermine Scope. Is this a "Leaf Failure" (just this task) or a "Branch Failure" (invalidates the parent's entire strategy)?Helps the parent decide whether to pivot or abort.5. Strategic ProposalSuggest Model Updates. Based on what was found, how should the parent's World Model be rewritten?Implements bottom-up learning (Posterior update).6. State ManagementDefine Current Disposition. Is the child idling, retrying, or has it fully terminated the process?Manages resource locks and prevents sequential "hangs."The "Surprise" Diagnostic QuestionsWhen a child agent encounters an anomaly, it should run through these internal checks before generating the escalation.md:The "Retry" vs. "Escalate" Filter: "Can I resolve this within the current World Model using a different tool or more time?"Action: If yes, do not escalate. If the assumptions themselves are the blocker, escalate immediately.The "Context" Filter: "Does the parent have the information I’m looking at, or is it hidden from them?"Action: If hidden, the escalation.md must include a "snippet" of the new reality (e.g., a truncated JSON response).The "Correction" Filter: "If I were the parent, what would I need to change about my request to make this work?"Action: Include this as a "Proposed Model Update" to save the parent's compute cycles on re-planning.Error Propagation VisualizationIn your sequential tree structure, an escalation functions as a backward pass in a neural network. It carries the "gradient" of the error back up to the node that has the authority to change the weights of the plan.Implementation Example: The "Mental Pivot"If a child agent finds that a database is down:Bad Escalation: "I can't find the data. Error 500." (Too low-fidelity).MAPS Escalation: "World Model Assumption A (Database Availability) is false. I observed a 500 Internal Server Error over 3 retries. Proposal: Shift world model to 'Offline Mode' or utilize the 'Backup_Cache' mentioned in the documentation."By treating the escalation as a formal update to the parent's belief system, you ensure the entire multi-agent tree "learns" from the environment in real-time.Does this escalation logic feel robust enough for your current agents, or do we need to define how "deep" into the tree an error should propagate before it triggers a "system-wide" reset?
+
+The Result is the final stage of the MAPS loop. In predictive processing terms, this is the Posterior Update. It signals that the child has successfully "quenched" the parent's prediction error, confirming the parent's world model was accurate enough to achieve the goal.The following checklist ensures the child agent provides a high-fidelity resolution that allows the parent to proceed with confidence.MAPS Child Result ChecklistPhaseAction ItemCognitive/Systems Purpose1. ValidationVerify "Definition of Done". Does the output match every requirement in the handoff.md?Ensures the "Goal" has been mathematically satisfied.2. Assumption AuditConfirm the World Model. Explicitly state which parent assumptions were found to be 100% true.Strengthens the parent's "Confidence Score" for future priors.3. Structural IntegrityValidate Payload Schema. Is the data in the specific format (JSON, CSV, etc.) requested?Prevents "Type Errors" when the parent parses the result.4. Precision ReportingIdentify "Near-Misses". Were there any values close to the "Escalation Thresholds" that didn't trigger?Provides nuanced data for the parent's next planning cycle.5. TraceabilityReference the Handoff ID. Link the result to the specific request ID.Maintains the "Chain of Thought" in sequential tree execution.6. Resource AuditLog Consumption. Report tokens, time, and tool calls used.Allows the parent to calculate "Return on Investment" for the task.The "Resolution" Diagnostic QuestionsBefore the child agent generates the result.md, it should run through these internal checks:The "Completeness" Test: "If I were the parent, could I move to the next step of the project using only this file?"Action: If not, append the missing context or data artifacts to the delivered_artifacts section.The "Confidence" Test: "Did I have to 'guess' or 'hallucinate' any part of the world model to make this work?"Action: If yes, move those details to Contextual Metadata. Do not present "guesses" as "confirmed assumptions."The "Foresight" Test: "Did I encounter anything that didn't break this task, but will likely break the next sibling's task?"Action: Highlight these observations in the Contextual Metadata. This is "Proactive Inference."Closing the Loop: The Parent's "Post-Result" ActionIn a MAPS-compliant system, once the parent receives the result.md, it should perform a Belief Update:Update Strategy: If the accuracy_score is high, the parent should reuse this "World Model" for the next sibling agent in the sequence.Update Weights: If the result contains "Near-Misses" (e.g., "Latency was high but within limits"), the parent should tighten the escalation_rules for the next child to prevent a future failure.Example: Proactive MetadataIf a child retrieves a file successfully but notices the server is "Unusually slow," it includes this in the Result. The Parent then sees this and, in the next handoff.md to the next child, it increases the timeout constraint and adds an escalation_rule for "Server Timeout."This is how a multi-agent tree develops "Systemic Intelligence"—by passing the refinements of the world model across the sequential chain.Does this complete the protocol for your needs, or should we look at how to handle "Partial Success" states?
