@@ -216,7 +216,23 @@ fn cmd_init(root: &Path, _from_specs: bool, force: bool) -> Result<()> {
     std::fs::create_dir_all(harness.join("logs").join("iterations"))?;
     std::fs::create_dir_all(harness.join("logs").join("hooks"))?;
 
+    // Optional Claude Code setup agent the user can run to configure hooks.
+    let agent_path = root.join(".claude").join("agents").join("harness-setup.md");
+    if let Some(parent) = agent_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if agent_path.exists() && !force {
+        println!("  skip   {} (exists)", agent_path.display());
+    } else {
+        std::fs::write(&agent_path, SETUP_AGENT)?;
+        println!("  create {}", agent_path.display());
+    }
+
     println!("\nInitialized harness at {}", harness.display());
+    println!(
+        "\nOptional: in Claude Code, run the `harness-setup` agent to wire the\n\
+         hooks to this project's build/test/lint commands."
+    );
     Ok(())
 }
 
@@ -610,6 +626,9 @@ fn cmd_doctor(root: &Path) -> Result<i32> {
 }
 
 // ─── scaffold templates ──────────────────────────────────────────────────────
+
+/// Claude Code subagent definition, installed to .claude/agents/ by `init`.
+const SETUP_AGENT: &str = include_str!("../templates/harness-setup.md");
 
 const HARNESS_TOML: &str = r#"[agent]
 command = "claude -p --dangerously-skip-permissions < {prompt_file}"

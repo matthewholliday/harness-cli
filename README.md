@@ -29,6 +29,27 @@ harness run --dry-run --once     # preview task selection
 harness run                      # drive the loop
 ```
 
+## Guided setup (optional Claude Code agent)
+
+`harness init` installs a Claude Code subagent to
+`.claude/agents/harness-setup.md`. Instead of editing the hook stubs by hand,
+you can let it configure them for you: it detects your project's
+build/test/lint/docs commands, wires the `.harness/scripts/hooks/*` scripts and
+`harness.toml`/`guardrails.toml` to match, runs each hook once, and finishes
+with `harness doctor`.
+
+In Claude Code, just ask for it:
+
+```
+> use the harness-setup agent to configure harness for this repo
+```
+
+It detects, **then confirms with you** before writing — it won't invent
+commands that don't exist or overwrite hooks you've already filled in. The
+canonical definition lives at
+[`templates/harness-setup.md`](templates/harness-setup.md); `init` writes a copy
+into each project (skipped if one already exists, unless `--force`).
+
 ## Commands
 
 | Command | Purpose |
