@@ -621,6 +621,7 @@ max_iterations = 50
 commit_each_success = true
 commit_message_template = "harness: {task_id} {task_title}"
 stop_when_no_tasks = true
+reset_on_failure = true       # restore the tree to last commit after a failed iteration
 
 [prompts]
 loop = ".harness/prompts/loop.md"

@@ -34,6 +34,14 @@ pub struct LoopConfig {
     pub commit_message_template: String,
     #[serde(default = "default_stop_when_no_tasks")]
     pub stop_when_no_tasks: bool,
+    /// On a failed iteration, restore the working tree to the last clean commit
+    /// so a broken attempt can't poison subsequent tasks. Default: true.
+    #[serde(default = "default_reset_on_failure")]
+    pub reset_on_failure: bool,
+}
+
+fn default_reset_on_failure() -> bool {
+    true
 }
 
 fn default_max_iterations() -> u32 {
@@ -55,6 +63,7 @@ impl Default for LoopConfig {
             commit_each_success: false,
             commit_message_template: default_commit_message_template(),
             stop_when_no_tasks: default_stop_when_no_tasks(),
+            reset_on_failure: default_reset_on_failure(),
         }
     }
 }

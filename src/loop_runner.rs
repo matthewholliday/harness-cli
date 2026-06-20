@@ -262,7 +262,18 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
                 &format!("- [{}] iter {iter}: task {} DONE — {}", now(), task.id, task.title),
             )?;
         } else {
-            // Failed attempt.
+            // Failed attempt. Restore the working tree to the last clean commit
+            // first, so this broken attempt can't poison the next task.
+            if config.loop_config.reset_on_failure {
+                match git_reset_workdir(root) {
+                    Ok(()) => append_progress(
+                        root,
+                        &format!("- [{}] iter {iter}: reset working tree to HEAD", now()),
+                    )?,
+                    Err(e) => eprintln!("warning: reset_on_failure skipped: {e:#}"),
+                }
+            }
+
             let task_mut = &mut tasks_by_spec[spec_vec_idx].1[entry.idx];
             task_mut.attempts += 1;
             let summary = if agent_exit != 0 {
@@ -426,6 +437,50 @@ fn git_commit(root: &Path, message: &str) -> Result<Option<String>> {
         .context("git rev-parse failed")?;
     let sha = String::from_utf8_lossy(&rev.stdout).trim().to_string();
     Ok(Some(sha))
+}
+
+/// Restore the working tree to the last committed state after a failed
+/// iteration, so a broken attempt can't poison subsequent tasks. The harness's
+/// own bookkeeping under `.harness/logs` is preserved (both its tracked and
+/// untracked files), keeping per-iteration observability intact. No-op with a
+/// warning if the repo has no commit to roll back to.
+fn git_reset_workdir(root: &Path) -> Result<()> {
+    let has_head = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_head {
+        anyhow::bail!("no commit to reset to (empty repository)");
+    }
+
+    // Restore tracked files to HEAD, except harness logs.
+    let checkout = Command::new("git")
+        .args(["checkout", "HEAD", "--", ".", ":(exclude).harness/logs"])
+        .current_dir(root)
+        .output()
+        .context("git checkout (reset) failed to run")?;
+    if !checkout.status.success() {
+        anyhow::bail!(
+            "git checkout failed: {}",
+            String::from_utf8_lossy(&checkout.stderr).trim()
+        );
+    }
+
+    // Remove untracked files the agent created, except harness logs.
+    let clean = Command::new("git")
+        .args(["clean", "-fd", "-e", ".harness/logs"])
+        .current_dir(root)
+        .output()
+        .context("git clean (reset) failed to run")?;
+    if !clean.status.success() {
+        anyhow::bail!(
+            "git clean failed: {}",
+            String::from_utf8_lossy(&clean.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 fn print_summary(done: usize, blocked: usize, remaining: usize) {
