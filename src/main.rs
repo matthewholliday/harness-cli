@@ -72,10 +72,14 @@ enum SpecCmd {
     List,
     Draft {
         name: String,
+        /// Inline brief: what the spec should do (quoted string).
         #[arg(long)]
-        interactive: bool,
+        brief: Option<String>,
+        /// Path to a brief file (.md, .txt, or any text). Use `-` for stdin.
         #[arg(long)]
         from: Option<PathBuf>,
+        #[arg(long)]
+        interactive: bool,
     },
     Edit {
         name: String,
@@ -181,6 +185,7 @@ fn cmd_init(root: &Path, _from_specs: bool, force: bool) -> Result<()> {
         ("guardrails/rules.md", RULES_MD),
         ("prompts/loop.md", LOOP_MD),
         ("prompts/init.md", INIT_MD),
+        ("prompts/draft-spec.md", DRAFT_SPEC_PROMPT),
         ("logs/progress.md", "# Progress\n\n"),
         ("logs/state.json", "{\"active_spec\":null,\"iteration_count\":0,\"last_task_id\":null,\"last_task_status\":null,\"run_start\":null}\n"),
     ];
@@ -265,15 +270,8 @@ fn cmd_spec(root: &Path, cmd: SpecCmd) -> Result<i32> {
             }
             Ok(0)
         }
-        SpecCmd::Draft { name, .. } => {
-            println!(
-                "Spec drafting is agent-assisted and not yet automated in this build.\n\
-                 To draft '{name}' manually:\n  \
-                 1. mkdir -p .specs/{name}\n  \
-                 2. create 1-requirements.json, 2-design.md, 3-tasks.jsonl\n  \
-                 3. run `harness spec validate {name}`"
-            );
-            Ok(0)
+        SpecCmd::Draft { name, brief, from, .. } => {
+            cmd_spec_draft(root, &name, brief, from)
         }
         SpecCmd::Edit {
             name,
@@ -334,6 +332,123 @@ fn cmd_spec(root: &Path, cmd: SpecCmd) -> Result<i32> {
         SpecCmd::Sync { name, .. } => {
             cmd_sync(root, &name)?;
             Ok(0)
+        }
+    }
+}
+
+fn cmd_spec_draft(
+    root: &Path,
+    name: &str,
+    brief: Option<String>,
+    from: Option<PathBuf>,
+) -> Result<i32> {
+    use std::io::Read as _;
+
+    // ── 1. Validate the spec name slug ────────────────────────────────────────
+    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || name.starts_with('-')
+    {
+        anyhow::bail!("spec name must match ^[a-z0-9][a-z0-9-]*$ — got '{name}'");
+    }
+
+    // ── 2. Read the brief ─────────────────────────────────────────────────────
+    let brief_text = match (brief, from) {
+        (Some(b), _) => b,
+        (None, Some(path)) if path == PathBuf::from("-") => {
+            let mut s = String::new();
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .context("failed to read brief from stdin")?;
+            s
+        }
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read brief from {}", path.display()))?,
+        (None, None) => {
+            // Fall back to interactive: read from stdin with a prompt.
+            eprintln!("Brief (describe what this spec should do; end with Ctrl-D):");
+            let mut s = String::new();
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .context("failed to read brief from stdin")?;
+            if s.trim().is_empty() {
+                anyhow::bail!(
+                    "no brief supplied — use --brief \"...\" or --from <file> or pipe to stdin"
+                );
+            }
+            s
+        }
+    };
+
+    if brief_text.trim().is_empty() {
+        anyhow::bail!("brief is empty");
+    }
+
+    // ── 3. Ensure the spec dir exists ─────────────────────────────────────────
+    let dir = spec_dir(root, name);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create {}", dir.display()))?;
+
+    // ── 4. Compose the drafting prompt ────────────────────────────────────────
+    // Prefer the project-local override so users can customise without
+    // rebuilding the binary; fall back to the compiled-in template.
+    let local_template_path = root.join(".harness").join("prompts").join("draft-spec.md");
+    let template = if local_template_path.exists() {
+        std::fs::read_to_string(&local_template_path).unwrap_or_else(|_| DRAFT_SPEC_PROMPT.to_string())
+    } else {
+        DRAFT_SPEC_PROMPT.to_string()
+    };
+    let prompt = template
+        .replace("{spec_name}", name)
+        .replace("{brief}", brief_text.trim());
+
+    // Write the prompt to a temp file.
+    let prompt_path = std::env::temp_dir().join(format!("harness-draft-{name}.md"));
+    std::fs::write(&prompt_path, &prompt)
+        .with_context(|| format!("failed to write draft prompt to {}", prompt_path.display()))?;
+
+    // ── 5. Run the agent ──────────────────────────────────────────────────────
+    let config = load_harness_config(root)?;
+    let cmd_str = config
+        .agent
+        .command
+        .replace("{prompt_file}", &prompt_path.to_string_lossy());
+    let working_dir = config.agent.working_dir.as_deref().unwrap_or(".");
+    let wd = root.join(working_dir);
+
+    println!("Drafting spec '{name}' — running agent…");
+    println!("(The agent will write .specs/{name}/1-requirements.json, 2-design.md, 3-tasks.jsonl)\n");
+
+    let status = if cfg!(windows) {
+        Command::new("cmd").arg("/C").arg(&cmd_str).current_dir(&wd).status()
+    } else {
+        Command::new("sh").arg("-c").arg(&cmd_str).current_dir(&wd).status()
+    }
+    .with_context(|| format!("failed to launch agent: {cmd_str}"))?;
+
+    let _ = std::fs::remove_file(&prompt_path);
+
+    let agent_exit = status.code().unwrap_or(-1);
+    if agent_exit != 0 {
+        anyhow::bail!("agent exited {agent_exit} — check agent adapter config");
+    }
+
+    // ── 6. Validate what the agent wrote ─────────────────────────────────────
+    println!("\nValidating generated spec…");
+    match validate_spec(root, name) {
+        Ok(()) => {
+            println!("✓ .specs/{name}/ is valid\n");
+            println!("Next steps:");
+            println!("  harness spec validate {name}   # re-check any edits");
+            println!("  harness spec sync {name}       # drift report");
+            println!("  harness run --spec {name} --dry-run --once");
+            println!("  harness run --spec {name}");
+            Ok(0)
+        }
+        Err(e) => {
+            eprintln!("✗ validation failed: {e:#}");
+            eprintln!("\nFix the issues above and re-run:");
+            eprintln!("  harness spec validate {name}");
+            Ok(1)
         }
     }
 }
@@ -629,6 +744,9 @@ fn cmd_doctor(root: &Path) -> Result<i32> {
 
 /// Claude Code subagent definition, installed to .claude/agents/ by `init`.
 const SETUP_AGENT: &str = include_str!("../templates/harness-setup.md");
+
+/// Prompt template used by `spec draft` to drive the agent.
+const DRAFT_SPEC_PROMPT: &str = include_str!("../templates/draft-spec.md");
 
 const HARNESS_TOML: &str = r#"[agent]
 command = "claude -p --dangerously-skip-permissions < {prompt_file}"
