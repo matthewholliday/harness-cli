@@ -95,7 +95,7 @@ pub fn compose_prompt(
     let mut body = substitute(&template, vars);
 
     let footer = format!(
-        "\n\n## Your task\nID: {}\nTitle: {}\nAcceptance:\n{}\n\nDo ONLY this task. Leave the project buildable. Update .harness/logs/progress.md with what you did. Then stop.",
+        "\n\n## Your task\nID: {}\nTitle: {}\nAcceptance:\n{}\n\nDo ONLY this task. Leave the project buildable. Update .harness/logs/progress.md with what you did. Then stop.\n\n**Do not modify any file under `.specs/` or `.harness/` (other than `.harness/logs/progress.md`). The harness will fail this iteration if you do.**",
         task.id,
         task.title,
         task_acceptance,

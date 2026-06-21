@@ -774,8 +774,17 @@ max_attempts_per_task = 3
 max_iterations = 50
 
 [writes]
-allow = ["src/**", "tests/**", "docs/**", ".specs/**"]
-deny = [".harness/guardrails/**", ".git/**", "**/secrets*", "**/.env*"]
+allow = ["src/**", "tests/**", "docs/**"]
+deny = [
+  ".specs/**",              # spec files are harness-managed; agents must not alter them
+  ".harness/harness.toml",
+  ".harness/guardrails/**",
+  ".harness/prompts/**",
+  ".harness/scripts/**",
+  ".git/**",
+  "**/secrets*",
+  "**/.env*",
+]
 
 [operations]
 deny_destructive = true
@@ -787,8 +796,13 @@ timeout_secs = 1800
 
 const RULES_MD: &str = r#"# Project Constraints
 
-- Only modify files within the allowed write paths.
-- Do not modify .harness/guardrails/ or any secrets files.
+- Only modify files within the allowed write paths (src/, tests/, docs/).
+- **Never modify files under `.specs/`** — spec files are the harness's source of
+  truth and are managed exclusively by the harness operator, not by agents.
+- **Never modify files under `.harness/`** except appending to
+  `.harness/logs/progress.md` as instructed. Do not touch harness.toml,
+  guardrails/, prompts/, or scripts/.
+- Do not modify .git/ or any secrets / .env files.
 - Leave the project buildable after every change.
 - Do not commit directly; the harness handles commits.
 "#;
@@ -797,6 +811,12 @@ const LOOP_MD: &str = r#"# Harness Loop Prompt
 
 ## Constraints
 {rules}
+
+> **HARD RULE — DO NOT TOUCH SPEC OR HARNESS FILES**
+> You must never create, edit, or delete any file under `.specs/` or `.harness/`
+> (except appending a summary line to `.harness/logs/progress.md`).
+> The harness enforces this mechanically: any write to those paths will cause the
+> iteration to fail and your changes to be reverted.
 
 ## Progress so far
 {progress}

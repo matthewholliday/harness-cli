@@ -176,6 +176,18 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
             all_blocking_passed = false;
             agent_failure = true;
         } else {
+            // Guard: reject any writes to spec or harness config/prompt/script files.
+            let violations = check_protected_writes(root);
+            if !violations.is_empty() {
+                eprintln!(
+                    "error: agent wrote to protected path(s) — failing iteration:\n{}",
+                    violations.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
+                );
+                all_blocking_passed = false;
+            }
+        }
+
+        if all_blocking_passed {
             // Verify phase: run the task's hooks (or config default) in order.
             let hook_list = if task.hooks.is_empty() {
                 config.hooks.default.clone()
@@ -488,4 +500,56 @@ fn print_summary(done: usize, blocked: usize, remaining: usize) {
     println!("  done:      {done}");
     println!("  blocked:   {blocked}");
     println!("  remaining: {remaining}");
+}
+
+/// Return a list of paths the agent modified that fall under protected areas:
+///   - `.specs/`  (spec source of truth — never agent-writable)
+///   - `.harness/` except `.harness/logs/` (config, guardrails, prompts, scripts)
+///
+/// Checks both tracked-file diffs (via `git diff --name-only HEAD`) and new
+/// untracked files (via `git ls-files --others --exclude-standard`).
+fn check_protected_writes(root: &Path) -> Vec<String> {
+    fn is_protected(path: &str) -> bool {
+        // Block anything under .specs/
+        if path.starts_with(".specs/") || path == ".specs" {
+            return true;
+        }
+        // Block .harness/ except .harness/logs/
+        if path.starts_with(".harness/") {
+            return !path.starts_with(".harness/logs/");
+        }
+        false
+    }
+
+    let mut violations = Vec::new();
+
+    // Modified tracked files.
+    if let Ok(out) = Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .current_dir(root)
+        .output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let p = line.trim();
+            if !p.is_empty() && is_protected(p) {
+                violations.push(p.to_string());
+            }
+        }
+    }
+
+    // New untracked files.
+    if let Ok(out) = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(root)
+        .output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let p = line.trim();
+            if !p.is_empty() && is_protected(p) {
+                violations.push(p.to_string());
+            }
+        }
+    }
+
+    violations
 }
