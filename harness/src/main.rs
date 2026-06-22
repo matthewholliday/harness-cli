@@ -4,6 +4,7 @@ mod loop_runner;
 mod prompt;
 mod spec;
 mod state;
+mod tui;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -57,6 +58,8 @@ enum Commands {
     },
     /// Show current loop status.
     Status,
+    /// Live terminal dashboard that watches a run as it happens.
+    Watch,
     /// Inspect iteration/hook logs.
     Logs {
         #[arg(long)]
@@ -164,6 +167,10 @@ fn dispatch(cli: Cli) -> Result<i32> {
         Commands::Status => {
             let root = find_project_root()?;
             cmd_status(&root)
+        }
+        Commands::Watch => {
+            let root = find_project_root()?;
+            tui::run(&root)
         }
         Commands::Logs { iteration, follow } => {
             let root = find_project_root()?;

@@ -64,6 +64,7 @@ into each project (skipped if one already exists, unless `--force`).
 | `harness hooks list` | List hook scripts. |
 | `harness hooks run <hook> [--task <id>]` | Run one hook manually. |
 | `harness status` | Active spec/task and task counts. |
+| `harness watch` | Live terminal dashboard (TUI) that visualizes a run as it happens. |
 | `harness logs [--iteration <n>]` | List iteration records or show one. |
 | `harness doctor` | Validate config, hooks, agent adapter, git. |
 
@@ -94,6 +95,39 @@ Each iteration:
 
 State lives entirely on disk (`.harness/`, `.specs/`), so a run is safe to
 Ctrl-C and resume.
+
+## Watching a run live
+
+`harness watch` opens a read-only terminal dashboard that re-reads the on-disk
+run state a few times a second and paints it. Because the loop already persists
+everything as it goes (`state.json`, `iterations/*.json`, `progress.md`, and the
+per-spec `3-tasks.jsonl`), the dashboard never touches the loop — run it in a
+second terminal next to `harness run`, or open it after a run to replay what
+happened.
+
+```sh
+# terminal 1
+harness run
+
+# terminal 2
+harness watch
+```
+
+It shows:
+
+- **Header** — run status (`RUNNING` / `IDLE` / `COMPLETE` / `STOPPED`), active
+  spec, iteration vs. budget, elapsed time, and the phase sequence. "Running" is
+  inferred from an in-progress task or a recent write to the log files.
+- **Progress gauge** — done / active / todo / blocked counts as a bar.
+- **Task table** — every task across all in-scope specs, in-progress first, with
+  status, attempts, and per-task phase progress. Select with `↑/↓` (or `j/k`).
+- **Task detail** — for the selected task: requirements/deps, phase checklist,
+  the latest iteration's agent exit and per-hook pass/fail + timings, the commit
+  sha, and the last failure note.
+- **Progress log** — the tail of `progress.md`, colorized by outcome.
+
+Keys: `↑/↓` select · `g/G` jump to top/bottom · `r` force refresh · `q` quit.
+The view auto-refreshes ~every 0.4s.
 
 ## Hook contract
 
