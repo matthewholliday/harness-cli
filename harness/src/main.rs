@@ -1020,41 +1020,46 @@ fn cmd_doctor(root: &Path) -> Result<i32> {
     check!("at least one spec", !specs.is_empty(), "run `harness spec draft <name>`");
     check!("git repository", root.join(".git").exists(), "run `git init` for rollback safety");
 
-    // Phase 0: manifest drift check for every spec that has an `owns` list.
+    // Phase 0: every spec must declare `owns`; then check manifest drift.
     for spec_name in &specs {
         let dir = spec_dir(root, spec_name);
-        let has_owns = load_requirements(&dir)
-            .ok()
-            .map(|r| !r.owns.is_empty())
-            .unwrap_or(false);
-        if has_owns {
-            match check_spec(root, spec_name) {
-                Ok(result) if result.is_clean() => {
-                    println!("✓ manifest: spec '{spec_name}' — clean");
-                }
-                Ok(result) => {
-                    ok = false;
-                    for drift in &result.drifts {
-                        match drift {
-                            DriftKind::Unrecorded { .. } => {
-                                println!("✗ manifest: spec '{spec_name}' — never recorded; run `harness manifest record {spec_name}`");
-                            }
-                            DriftKind::StaleCode { .. } => {
-                                println!("✗ manifest: spec '{spec_name}' — spec changed since last regen; run `harness regen {spec_name}`");
-                            }
-                            DriftKind::CodeDrift { path } => {
-                                println!("✗ manifest: spec '{spec_name}' — hand-edit detected: {path}");
-                            }
-                            DriftKind::Missing { path } => {
-                                println!("✗ manifest: spec '{spec_name}' — owned file missing: {path}");
-                            }
+        match load_requirements(&dir).ok().map(|r| r.owns.is_empty()) {
+            Some(true) | None => {
+                ok = false;
+                println!(
+                    "✗ spec '{spec_name}' has no 'owns' declaration — \
+                     add an 'owns' glob list to .specs/{spec_name}/1-requirements.json"
+                );
+                continue;
+            }
+            Some(false) => {}
+        }
+        match check_spec(root, spec_name) {
+            Ok(result) if result.is_clean() => {
+                println!("✓ manifest: spec '{spec_name}' — clean");
+            }
+            Ok(result) => {
+                ok = false;
+                for drift in &result.drifts {
+                    match drift {
+                        DriftKind::Unrecorded { .. } => {
+                            println!("✗ manifest: spec '{spec_name}' — never recorded; run `harness manifest record {spec_name}`");
+                        }
+                        DriftKind::StaleCode { .. } => {
+                            println!("✗ manifest: spec '{spec_name}' — spec changed since last regen; run `harness regen {spec_name}`");
+                        }
+                        DriftKind::CodeDrift { path } => {
+                            println!("✗ manifest: spec '{spec_name}' — hand-edit detected: {path}");
+                        }
+                        DriftKind::Missing { path } => {
+                            println!("✗ manifest: spec '{spec_name}' — owned file missing: {path}");
                         }
                     }
                 }
-                Err(e) => {
-                    ok = false;
-                    println!("✗ manifest: spec '{spec_name}' — check failed: {e:#}");
-                }
+            }
+            Err(e) => {
+                ok = false;
+                println!("✗ manifest: spec '{spec_name}' — check failed: {e:#}");
             }
         }
     }

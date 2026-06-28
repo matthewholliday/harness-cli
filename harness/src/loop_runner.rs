@@ -13,7 +13,7 @@ use crate::hooks::{
 };
 use crate::manifest::record_spec;
 use crate::prompt::{compose_prompt, write_prompt_file};
-use crate::spec::{list_specs, load_tasks, save_tasks, spec_dir, Task, TaskStatus};
+use crate::spec::{list_specs, load_requirements, load_tasks, save_tasks, spec_dir, Task, TaskStatus};
 use crate::state::{
     append_progress, load_state, prune_iteration_logs, save_iteration_record, save_state,
     HookResult, IterationRecord,
@@ -72,6 +72,19 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
     if scope.is_empty() {
         println!("No specs found under .specs/. Nothing to do.");
         return Ok(0);
+    }
+
+    // Enforce spec-as-source: every spec must declare an `owns` list.
+    for name in &scope {
+        let dir = spec_dir(root, name);
+        let reqs = load_requirements(&dir)
+            .with_context(|| format!("failed to load requirements for spec '{name}'"))?;
+        if reqs.owns.is_empty() {
+            anyhow::bail!(
+                "spec '{name}' has no 'owns' declaration — add an 'owns' glob list to \
+                 .specs/{name}/1-requirements.json before running the harness"
+            );
+        }
     }
 
     // Load all tasks per spec into memory; tasks_by_spec[spec] = Vec<Task>.

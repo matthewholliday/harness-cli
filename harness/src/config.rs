@@ -246,6 +246,10 @@ pub struct HookGuardrail {
     pub timeout_secs: u64,
 }
 
+fn default_enforce_ownership() -> bool {
+    true
+}
+
 fn default_blocking() -> bool {
     true
 }
@@ -288,7 +292,7 @@ pub struct GuardrailsConfig {
     pub hooks: HashMap<String, HookGuardrail>,
     /// When true and a task has non-empty files_hint, any file the agent changes
     /// that falls outside files_hint ∪ writes.allow causes the iteration to fail.
-    #[serde(default)]
+    #[serde(default = "default_enforce_ownership")]
     pub enforce_ownership: bool,
 }
 
