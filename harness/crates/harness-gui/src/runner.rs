@@ -39,7 +39,11 @@ fn harness_bin() -> PathBuf {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join(if cfg!(windows) { "harness.exe" } else { "harness" });
+            let sibling = dir.join(if cfg!(windows) {
+                "harness.exe"
+            } else {
+                "harness"
+            });
             if sibling.exists() {
                 return sibling;
             }

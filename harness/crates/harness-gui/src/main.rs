@@ -163,7 +163,8 @@ impl HarnessApp {
         self.last_exit = None;
         match RunHandle::spawn(&self.root, &self.opts) {
             Ok(h) => {
-                self.log.push(format!("$ harness build  ({})", self.root.display()));
+                self.log
+                    .push(format!("$ harness build  ({})", self.root.display()));
                 self.run = Some(h);
                 self.tab = Tab::Output;
             }
@@ -212,13 +213,25 @@ struct Status {
 
 fn run_status(app: &HarnessApp) -> Status {
     if app.is_running() || app.snap.is_live() {
-        Status { label: "RUNNING", color: OK }
+        Status {
+            label: "RUNNING",
+            color: OK,
+        }
     } else if app.snap.counts.total() > 0 && app.snap.counts.done == app.snap.counts.total() {
-        Status { label: "COMPLETE", color: ACCENT }
+        Status {
+            label: "COMPLETE",
+            color: ACCENT,
+        }
     } else if app.snap.counts.blocked > 0 {
-        Status { label: "BLOCKED", color: FAIL }
+        Status {
+            label: "BLOCKED",
+            color: FAIL,
+        }
     } else {
-        Status { label: "IDLE", color: DIM }
+        Status {
+            label: "IDLE",
+            color: DIM,
+        }
     }
 }
 
@@ -261,14 +274,26 @@ impl HarnessApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let st = run_status(self);
-                ui.label(RichText::new(format!("● {}", st.label)).color(st.color).strong());
+                ui.label(
+                    RichText::new(format!("● {}", st.label))
+                        .color(st.color)
+                        .strong(),
+                );
                 ui.separator();
-                let spec = self.snap.state.active_spec.clone().unwrap_or_else(|| "—".into());
+                let spec = self
+                    .snap
+                    .state
+                    .active_spec
+                    .clone()
+                    .unwrap_or_else(|| "—".into());
                 ui.label(RichText::new("spec").color(DIM));
                 ui.label(RichText::new(spec).strong());
                 ui.separator();
                 ui.label(RichText::new("iter").color(DIM));
-                ui.label(format!("{}/{}", self.snap.state.iteration_count, self.snap.budget));
+                ui.label(format!(
+                    "{}/{}",
+                    self.snap.state.iteration_count, self.snap.budget
+                ));
                 ui.separator();
                 ui.label(RichText::new("elapsed").color(DIM));
                 ui.label(elapsed_str(self));
@@ -420,74 +445,91 @@ impl HarnessApp {
             ui.label(RichText::new("No task selected.").color(DIM));
             return;
         };
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.heading(RichText::new(format!("{}  {}", task.id, task.title)).color(status_color(&task.status)));
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("status").color(DIM));
-                ui.label(RichText::new(format!("{:?}", task.status)).color(status_color(&task.status)));
-                ui.label(RichText::new("  priority").color(DIM));
-                ui.label(task.priority.to_string());
-                ui.label(RichText::new("  attempts").color(DIM));
-                ui.label(format!("{}/{}", task.attempts, task.max_attempts));
-            });
-            if !task.depends_on.is_empty() {
-                ui.label(format!("depends on: {}", task.depends_on.join(", ")));
-            }
-            if !task.requirements.is_empty() {
-                ui.label(format!("requirements: {}", task.requirements.join(", ")));
-            }
-            if !task.phases.is_empty() {
-                ui.label(format!(
-                    "phases: {} (done: {})",
-                    task.phases.join(" → "),
-                    task.completed_phases.join(", ")
-                ));
-            }
-            if let Some(note) = &task.last_failure {
-                ui.add_space(6.0);
-                ui.label(RichText::new("last failure").color(FAIL).strong());
-                ui.label(RichText::new(note).color(FAIL).monospace());
-            }
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.label(RichText::new("LATEST ITERATION").color(DIM).strong());
-            match self.snap.latest_iteration_for(&task.id) {
-                None => {
-                    ui.label(RichText::new("no iteration record yet").color(DIM));
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.heading(
+                    RichText::new(format!("{}  {}", task.id, task.title))
+                        .color(status_color(&task.status)),
+                );
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("status").color(DIM));
+                    ui.label(
+                        RichText::new(format!("{:?}", task.status))
+                            .color(status_color(&task.status)),
+                    );
+                    ui.label(RichText::new("  priority").color(DIM));
+                    ui.label(task.priority.to_string());
+                    ui.label(RichText::new("  attempts").color(DIM));
+                    ui.label(format!("{}/{}", task.attempts, task.max_attempts));
+                });
+                if !task.depends_on.is_empty() {
+                    ui.label(format!("depends on: {}", task.depends_on.join(", ")));
                 }
-                Some(rec) => {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("iter {}", rec.iteration));
-                        let c = if rec.agent_exit_status == 0 { OK } else { FAIL };
-                        ui.label(RichText::new(format!("agent exit {}", rec.agent_exit_status)).color(c));
-                        if let Some(sha) = &rec.git_commit_sha {
-                            ui.label(RichText::new(format!("commit {}", &sha[..sha.len().min(8)])).color(ACCENT));
-                        }
-                    });
-                    for h in &rec.hook_results {
-                        let c = if h.passed { OK } else { FAIL };
-                        let mark = if h.passed { "✓" } else { "✗" };
-                        ui.label(
-                            RichText::new(format!(
-                                "{mark} {}  (exit {}, {}ms)",
-                                h.name, h.exit_code, h.duration_ms
-                            ))
-                            .color(c)
-                            .monospace(),
-                        );
-                        if !h.passed && !h.truncated_output.is_empty() {
-                            ui.label(RichText::new(&h.truncated_output).color(DIM).monospace());
+                if !task.requirements.is_empty() {
+                    ui.label(format!("requirements: {}", task.requirements.join(", ")));
+                }
+                if !task.phases.is_empty() {
+                    ui.label(format!(
+                        "phases: {} (done: {})",
+                        task.phases.join(" → "),
+                        task.completed_phases.join(", ")
+                    ));
+                }
+                if let Some(note) = &task.last_failure {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("last failure").color(FAIL).strong());
+                    ui.label(RichText::new(note).color(FAIL).monospace());
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(RichText::new("LATEST ITERATION").color(DIM).strong());
+                match self.snap.latest_iteration_for(&task.id) {
+                    None => {
+                        ui.label(RichText::new("no iteration record yet").color(DIM));
+                    }
+                    Some(rec) => {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("iter {}", rec.iteration));
+                            let c = if rec.agent_exit_status == 0 { OK } else { FAIL };
+                            ui.label(
+                                RichText::new(format!("agent exit {}", rec.agent_exit_status))
+                                    .color(c),
+                            );
+                            if let Some(sha) = &rec.git_commit_sha {
+                                ui.label(
+                                    RichText::new(format!("commit {}", &sha[..sha.len().min(8)]))
+                                        .color(ACCENT),
+                                );
+                            }
+                        });
+                        for h in &rec.hook_results {
+                            let c = if h.passed { OK } else { FAIL };
+                            let mark = if h.passed { "✓" } else { "✗" };
+                            ui.label(
+                                RichText::new(format!(
+                                    "{mark} {}  (exit {}, {}ms)",
+                                    h.name, h.exit_code, h.duration_ms
+                                ))
+                                .color(c)
+                                .monospace(),
+                            );
+                            if !h.passed && !h.truncated_output.is_empty() {
+                                ui.label(RichText::new(&h.truncated_output).color(DIM).monospace());
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
     }
 
     fn output_tab(&mut self, ui: &mut egui::Ui) {
         if self.log.is_empty() {
-            ui.label(RichText::new("No run output yet. Press Start to launch `harness build`.").color(DIM));
+            ui.label(
+                RichText::new("No run output yet. Press Start to launch `harness build`.")
+                    .color(DIM),
+            );
             return;
         }
         egui::ScrollArea::vertical()
@@ -507,33 +549,39 @@ impl HarnessApp {
         };
         self.ensure_spec_cache(&spec);
         let Some(view) = &self.spec_cache else { return };
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.heading(&view.spec);
-            ui.add_space(6.0);
-            ui.label(RichText::new("REQUIREMENTS").color(DIM).strong());
-            match &view.requirements {
-                None => {
-                    ui.label(RichText::new("no 1-requirements.json").color(DIM));
-                }
-                Some(rf) => {
-                    for r in &rf.requirements {
-                        let text = r.text.clone().or_else(|| r.response.clone()).unwrap_or_default();
-                        ui.label(RichText::new(format!("• {}  {}", r.id, text)).strong());
-                        for ac in &r.acceptance_criteria {
-                            ui.label(RichText::new(format!("    - {ac}")).color(DIM));
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.heading(&view.spec);
+                ui.add_space(6.0);
+                ui.label(RichText::new("REQUIREMENTS").color(DIM).strong());
+                match &view.requirements {
+                    None => {
+                        ui.label(RichText::new("no 1-requirements.json").color(DIM));
+                    }
+                    Some(rf) => {
+                        for r in &rf.requirements {
+                            let text = r
+                                .text
+                                .clone()
+                                .or_else(|| r.response.clone())
+                                .unwrap_or_default();
+                            ui.label(RichText::new(format!("• {}  {}", r.id, text)).strong());
+                            for ac in &r.acceptance_criteria {
+                                ui.label(RichText::new(format!("    - {ac}")).color(DIM));
+                            }
                         }
                     }
                 }
-            }
-            ui.add_space(8.0);
-            ui.separator();
-            ui.label(RichText::new("DESIGN").color(DIM).strong());
-            if view.design.is_empty() {
-                ui.label(RichText::new("no 2-design.md").color(DIM));
-            } else {
-                ui.label(RichText::new(&view.design).monospace());
-            }
-        });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(RichText::new("DESIGN").color(DIM).strong());
+                if view.design.is_empty() {
+                    ui.label(RichText::new("no 2-design.md").color(DIM));
+                } else {
+                    ui.label(RichText::new(&view.design).monospace());
+                }
+            });
     }
 
     fn phases_tab(&mut self, ui: &mut egui::Ui) {
@@ -542,32 +590,37 @@ impl HarnessApp {
             return;
         }
         let phases = self.snap.phase_sequence.clone();
-        egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("phase-grid").striped(true).show(ui, |ui| {
-                ui.label(RichText::new("task").color(DIM).strong());
-                for p in &phases {
-                    ui.label(RichText::new(p).color(DIM).strong());
-                }
-                ui.end_row();
-
-                for t in &self.snap.tasks {
-                    ui.label(RichText::new(format!("{} {}", status_glyph(&t.status), t.id)).color(status_color(&t.status)));
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new("phase-grid").striped(true).show(ui, |ui| {
+                    ui.label(RichText::new("task").color(DIM).strong());
                     for p in &phases {
-                        let active = t.phases.contains(p);
-                        let done = t.completed_phases.contains(p);
-                        let (mark, color) = if !active {
-                            ("–", DIM)
-                        } else if done {
-                            ("✓", OK)
-                        } else {
-                            ("·", WARN)
-                        };
-                        ui.label(RichText::new(mark).color(color));
+                        ui.label(RichText::new(p).color(DIM).strong());
                     }
                     ui.end_row();
-                }
+
+                    for t in &self.snap.tasks {
+                        ui.label(
+                            RichText::new(format!("{} {}", status_glyph(&t.status), t.id))
+                                .color(status_color(&t.status)),
+                        );
+                        for p in &phases {
+                            let active = t.phases.contains(p);
+                            let done = t.completed_phases.contains(p);
+                            let (mark, color) = if !active {
+                                ("–", DIM)
+                            } else if done {
+                                ("✓", OK)
+                            } else {
+                                ("·", WARN)
+                            };
+                            ui.label(RichText::new(mark).color(color));
+                        }
+                        ui.end_row();
+                    }
+                });
             });
-        });
     }
 }
 

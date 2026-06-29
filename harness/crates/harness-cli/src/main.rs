@@ -1307,7 +1307,10 @@ fn cmd_eval_draft(root: &Path, spec: &str, force: bool, use_code_agent: bool) ->
     // ── 1. Load the spec's requirements (the source of the draft) ─────────────
     let dir = spec_dir(root, spec);
     if !dir.is_dir() {
-        anyhow::bail!("no spec '{spec}' at {} — run `harness spec new {spec}` first", dir.display());
+        anyhow::bail!(
+            "no spec '{spec}' at {} — run `harness spec new {spec}` first",
+            dir.display()
+        );
     }
     let reqs = load_requirements(&dir)
         .with_context(|| format!(".specs/{spec}/1-requirements.json failed to parse"))?;
@@ -1356,7 +1359,8 @@ fn cmd_eval_draft(root: &Path, spec: &str, force: bool, use_code_agent: bool) ->
     // ── 4. Build the prompt from the template ─────────────────────────────────
     let local_template_path = root.join(".harness").join("prompts").join("draft-eval.md");
     let template = if local_template_path.exists() {
-        std::fs::read_to_string(&local_template_path).unwrap_or_else(|_| DRAFT_EVAL_PROMPT.to_string())
+        std::fs::read_to_string(&local_template_path)
+            .unwrap_or_else(|_| DRAFT_EVAL_PROMPT.to_string())
     } else {
         DRAFT_EVAL_PROMPT.to_string()
     };
@@ -1396,9 +1400,17 @@ fn cmd_eval_draft(root: &Path, spec: &str, force: bool, use_code_agent: bool) ->
     println!("(The agent will write stub scripts to evals/{spec}/)\n");
 
     let status = if cfg!(windows) {
-        Command::new("cmd").arg("/C").arg(&cmd_str).current_dir(&wd).status()
+        Command::new("cmd")
+            .arg("/C")
+            .arg(&cmd_str)
+            .current_dir(&wd)
+            .status()
     } else {
-        Command::new("sh").arg("-c").arg(&cmd_str).current_dir(&wd).status()
+        Command::new("sh")
+            .arg("-c")
+            .arg(&cmd_str)
+            .current_dir(&wd)
+            .status()
     }
     .with_context(|| format!("failed to launch agent: {cmd_str}"))?;
 
