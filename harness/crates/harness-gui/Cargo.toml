@@ -12,5 +12,6 @@ harness-core = { path = "../harness-core" }
 eframe.workspace = true
 egui.workspace = true
 egui_extras.workspace = true
+rfd.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

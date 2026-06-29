@@ -47,17 +47,25 @@ const FAIL: Color32 = Color32::from_rgb(224, 108, 117);
 const DIM: Color32 = Color32::from_rgb(130, 137, 151);
 /// Slightly lighter than the window background, to set each layer box apart.
 const BOX_BG: Color32 = Color32::from_rgb(38, 42, 50);
+/// Distinct accent for the project (root folder) name in the left column header.
+const PROJECT: Color32 = Color32::from_rgb(198, 160, 246);
 /// Fixed width for the Generate/Regenerate header button so its size doesn't
 /// jump with the label length.
 const GEN_BTN_W: f32 = 96.0;
 
 fn main() -> eframe::Result<()> {
     let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let title = format!(
+        "Harness — {}",
+        root.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.display().to_string())
+    );
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1120.0, 760.0])
             .with_min_inner_size([720.0, 480.0])
-            .with_title("Harness — spec layers"),
+            .with_title(title),
         ..Default::default()
     };
     eframe::run_native(
@@ -160,6 +168,36 @@ impl GuiApp {
         self.last_load = Instant::now();
     }
 
+    /// The display name for the current root — the final path component, or the
+    /// full path when there isn't one (e.g. a filesystem root).
+    fn root_name(&self) -> String {
+        self.root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.root.display().to_string())
+    }
+
+    /// Switch the whole app to a different project directory. Any running job is
+    /// dropped (its child is killed on drop), the log is cleared, and the spec
+    /// list / selection / content are reloaded from the new root. The OS window
+    /// title is updated to include the new folder name.
+    fn set_root(&mut self, root: PathBuf, ctx: &egui::Context) {
+        self.root = root;
+        self.run = None;
+        self.log.clear();
+        self.last_exit = None;
+        self.dialog = None;
+        self.set_all_open = None;
+        self.specs = list_specs(&self.root).unwrap_or_default();
+        self.selected = self.specs.first().cloned();
+        self.content = self.selected.clone().map(|s| Content::load(&self.root, &s));
+        self.last_load = Instant::now();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+            "Harness — {}",
+            self.root_name()
+        )));
+    }
+
     /// Re-read the spec list and the selected spec's content from disk.
     fn reload(&mut self) {
         self.specs = list_specs(&self.root).unwrap_or_default();
@@ -235,22 +273,68 @@ impl eframe::App for GuiApp {
 
 // ── panels ───────────────────────────────────────────────────────────────────
 impl GuiApp {
+    /// Open a native folder picker (seeded at the current root). Returns the
+    /// chosen folder when it differs from the current root. Blocks the UI thread
+    /// while the dialog is open, which is fine for a one-shot picker.
+    fn pick_new_root(&self) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new();
+        if self.root.is_dir() {
+            dialog = dialog.set_directory(&self.root);
+        }
+        dialog.pick_folder().filter(|p| *p != self.root)
+    }
+
     fn left_panel(&mut self, ctx: &egui::Context) {
+        // Deferred until after the panel closure: `change` opens a picker and
+        // re-roots the app, which needs `&mut self` + `ctx` without the borrow
+        // the closure holds.
+        let mut new_root: Option<PathBuf> = None;
+        let mut reload_requested = false;
         egui::SidePanel::left("specs")
-            .resizable(true)
-            .default_width(220.0)
+            .resizable(false)
+            .exact_width(220.0)
             .show(ctx, |ui| {
                 ui.add_space(6.0);
+                // Single-row header. Controls are added first (right-to-left,
+                // far right) so the title gets only the remaining width and
+                // truncates with an ellipsis instead of pushing them off the
+                // fixed-width column.
                 ui.horizontal(|ui| {
-                    ui.heading("Specs");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .link("refresh")
                             .on_hover_text("Reload from disk")
                             .clicked()
                         {
-                            self.reload();
+                            reload_requested = true;
                         }
+                        ui.colored_label(DIM, "·");
+                        // Switching projects while a job runs would orphan it.
+                        let running = self.is_running();
+                        let change = ui.add_enabled(!running, egui::Link::new("change"));
+                        if running {
+                            change
+                                .on_hover_text("Stop the running job before switching projects.");
+                        } else if change
+                            .on_hover_text("Open a different project folder")
+                            .clicked()
+                        {
+                            new_root = self.pick_new_root();
+                        }
+                        // The project (root folder) name fills the remaining
+                        // space, left-aligned and truncated with "…" when long.
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(self.root_name())
+                                        .size(15.0)
+                                        .strong()
+                                        .color(PROJECT),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(self.root.display().to_string());
+                        });
                     });
                 });
                 ui.separator();
@@ -269,6 +353,12 @@ impl GuiApp {
                     }
                 });
             });
+
+        if let Some(root) = new_root {
+            self.set_root(root, ctx);
+        } else if reload_requested {
+            self.reload();
+        }
     }
 
     fn central_accordion(&mut self, ctx: &egui::Context) {
