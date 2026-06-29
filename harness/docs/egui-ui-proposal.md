@@ -1,6 +1,6 @@
 # Proposal: An egui GUI for the Harness CLI
 
-**Status:** Draft for review
+**Status:** Implemented (phases 1–5; see "Implementation status" below)
 **Author:** (proposed)
 **Date:** 2026-06-28
 
@@ -192,6 +192,27 @@ read-only dashboard.
 - Should the GUI eventually allow editing specs, or stay read-only and defer to `$EDITOR`/`harness spec edit`?
 - Is live agent stdout streaming acceptable given agents can be verbose, or should it be opt-in/tail-limited?
 - Distribution: build `harness-gui` in CI artifacts, or leave it `cargo install`-only initially?
+
+## Implementation status
+
+Implemented as a three-crate Cargo workspace:
+
+- **`harness-core`** — the modules formerly under `harness/src/` (config, hooks,
+  loop_runner, manifest, prompt, spec, state, util) plus a new
+  `snapshot` module holding the UI-agnostic read model (`Snapshot`, `Counts`)
+  lifted out of `tui.rs`.
+- **`harness-cli`** — the existing `harness` binary; now depends on
+  `harness-core` and its Ratatui `tui.rs` renders from `harness_core::snapshot`.
+  All existing tests pass unchanged.
+- **`harness-gui`** — the new `eframe`/`egui` binary. `runner.rs` spawns and
+  streams `harness build`; `main.rs` renders the header (status, stats bar, Start/
+  Stop + run-option controls), task list, progress log, and a tabbed central pane
+  (Detail / Live output / Spec / Phases).
+
+Decisions taken against §9's open questions: workspace split (not a feature
+flag); GUI is read-only for specs in v1 (no editing); live stdout is streamed to
+the Live-output tab. CLI build is unaffected by egui — `cargo build -p
+harness-cli` pulls none of the GUI dependency tree.
 
 ## 10. Recommendation
 

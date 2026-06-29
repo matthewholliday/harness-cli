@@ -1,12 +1,4 @@
-mod config;
-mod hooks;
-mod loop_runner;
-mod manifest;
-mod prompt;
-mod spec;
-mod state;
 mod tui;
-mod util;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -15,15 +7,15 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::config::{find_project_root, load_harness_config};
-use crate::hooks::{run_hook, HookInvocation};
-use crate::loop_runner::{run, RunOptions};
-use crate::manifest::{check_spec, record_spec, DriftKind};
-use crate::prompt::compose_prompt;
-use crate::spec::{
+use harness_core::config::{find_project_root, load_harness_config};
+use harness_core::hooks::{run_hook, HookInvocation};
+use harness_core::loop_runner::{run, RunOptions};
+use harness_core::manifest::{check_spec, record_spec, DriftKind};
+use harness_core::prompt::compose_prompt;
+use harness_core::spec::{
     list_specs, load_requirements, load_tasks, save_tasks, spec_dir, Task, TaskStatus,
 };
-use crate::state::load_state;
+use harness_core::state::load_state;
 
 #[derive(Parser)]
 #[command(
@@ -1071,7 +1063,7 @@ fn references_id(haystack: &str, id: &str) -> bool {
     false
 }
 
-fn detect_cycle(tasks: &[spec::Task]) -> Result<()> {
+fn detect_cycle(tasks: &[harness_core::spec::Task]) -> Result<()> {
     use std::collections::HashMap;
     let mut graph: HashMap<&str, &Vec<String>> = HashMap::new();
     for t in tasks {
@@ -1962,9 +1954,9 @@ fn cmd_regen(
     }
 
     // Build the set of files to burn.
-    let all_owned = crate::manifest::expand_owned_paths(root, owns)?;
+    let all_owned = harness_core::manifest::expand_owned_paths(root, owns)?;
     let to_burn: Vec<String> = if let Some(comp_glob) = component {
-        let comp_set = crate::manifest::build_owns_globset(&[comp_glob.to_string()])?;
+        let comp_set = harness_core::manifest::build_owns_globset(&[comp_glob.to_string()])?;
         all_owned
             .into_iter()
             .filter(|p| comp_set.is_match(p))
@@ -1992,7 +1984,7 @@ fn cmd_regen(
 
         // Snapshot untracked files BEFORE burning/regenerating, so rollback only
         // removes files this regen created — never the user's untracked work.
-        let untracked_before = crate::util::git_list_untracked(root).unwrap_or_default();
+        let untracked_before = harness_core::util::git_list_untracked(root).unwrap_or_default();
 
         // 2. Delete owned files (they're ashes; the spec is the source).
         println!("[{attempt_label}] Burning {} owned file(s)…", to_burn.len());
@@ -2007,7 +1999,7 @@ fn cmd_regen(
         // 3. Compose a regeneration prompt and run the agent.
         let config = load_harness_config(root)?;
         let regen_prompt = compose_regen_prompt(root, spec_name, &reqs, &to_burn)?;
-        let (prompt_file, _) = crate::prompt::write_prompt_file(&regen_prompt)?;
+        let (prompt_file, _) = harness_core::prompt::write_prompt_file(&regen_prompt)?;
 
         let cmd_str = config
             .agent
@@ -2036,12 +2028,12 @@ fn cmd_regen(
         let agent_exit = status.code().unwrap_or(-1);
         if agent_exit != 0 {
             println!("[{attempt_label}] Agent exited {agent_exit} — rolling back.");
-            let _ = crate::util::git_restore_to_head(root, &untracked_before);
+            let _ = harness_core::util::git_restore_to_head(root, &untracked_before);
             return Ok((agent_exit, vec![]));
         }
 
         // 4. Run hooks (including evals from evals/<spec>/).
-        let guardrails = crate::config::load_guardrails(root)?;
+        let guardrails = harness_core::config::load_guardrails(root)?;
         let hooks_to_run = if config.hooks.default.is_empty() {
             vec![]
         } else {
@@ -2077,12 +2069,12 @@ fn cmd_regen(
                 iteration: 0,
                 attempt: 0,
             };
-            let timeout = crate::hooks::hook_timeout(
+            let timeout = harness_core::hooks::hook_timeout(
                 &guardrails,
                 hook_name,
                 config.hooks.default_timeout_secs,
             );
-            let blocking = crate::hooks::is_hook_blocking(&guardrails, hook_name);
+            let blocking = harness_core::hooks::is_hook_blocking(&guardrails, hook_name);
             match run_hook(root, &inv, &dummy_task, timeout) {
                 Ok(outcome) => {
                     let passed = outcome.exit_code == 0 && !outcome.timed_out;
@@ -2100,7 +2092,7 @@ fn cmd_regen(
                 Err(e) => {
                     println!("  hook {hook_name}: ERROR — {e:#}");
                     hook_log.push(format!("  hook {hook_name}: ERROR"));
-                    if crate::hooks::is_hook_blocking(&guardrails, hook_name) {
+                    if harness_core::hooks::is_hook_blocking(&guardrails, hook_name) {
                         all_passed = false;
                         break;
                     }
@@ -2140,7 +2132,7 @@ fn cmd_regen(
 
         if !all_passed {
             println!("[{attempt_label}] Gates failed — rolling back.");
-            let _ = crate::util::git_restore_to_head(root, &untracked_before);
+            let _ = harness_core::util::git_restore_to_head(root, &untracked_before);
             return Ok((-1, hook_log));
         }
 
@@ -2152,7 +2144,7 @@ fn cmd_regen(
                         "[{attempt_label}] Running cross-model reviewer (public_interface spec)…"
                     );
                     let review_prompt = compose_review_prompt(spec_name, &reqs, &to_burn);
-                    let (review_file, _) = crate::prompt::write_prompt_file(&review_prompt)?;
+                    let (review_file, _) = harness_core::prompt::write_prompt_file(&review_prompt)?;
                     let rcmd =
                         reviewer_cmd.replace("{prompt_file}", &review_file.to_string_lossy());
                     let rstatus = if cfg!(windows) {
@@ -2174,7 +2166,7 @@ fn cmd_regen(
                         println!(
                             "[{attempt_label}] Reviewer rejected regeneration — rolling back."
                         );
-                        let _ = crate::util::git_restore_to_head(root, &untracked_before);
+                        let _ = harness_core::util::git_restore_to_head(root, &untracked_before);
                         return Ok((-1, hook_log));
                     }
                     println!("[{attempt_label}] Reviewer accepted.");
@@ -2242,7 +2234,7 @@ fn git_commit_all(root: &Path, message: &str) -> Result<()> {
 fn compose_regen_prompt(
     root: &Path,
     spec_name: &str,
-    reqs: &crate::spec::RequirementsFile,
+    reqs: &harness_core::spec::RequirementsFile,
     to_burn: &[String],
 ) -> Result<String> {
     let req_json = serde_json::to_string_pretty(&reqs.requirements).unwrap_or_default();
@@ -2282,7 +2274,7 @@ fn compose_regen_prompt(
 
 fn compose_review_prompt(
     spec_name: &str,
-    reqs: &crate::spec::RequirementsFile,
+    reqs: &harness_core::spec::RequirementsFile,
     regenerated_files: &[String],
 ) -> String {
     let req_json = serde_json::to_string_pretty(&reqs.requirements).unwrap_or_default();
@@ -2323,7 +2315,7 @@ fn cmd_sync_against_code(root: &Path, spec_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    let owned_files = crate::manifest::expand_owned_paths(root, &reqs.owns)?;
+    let owned_files = harness_core::manifest::expand_owned_paths(root, &reqs.owns)?;
     if owned_files.is_empty() {
         println!("No owned files found on disk for spec '{spec_name}'.");
         return Ok(());
@@ -2357,7 +2349,7 @@ Write ONLY to the output path above. Do not modify any other file.
     );
 
     let config = load_harness_config(root)?;
-    let (prompt_file, _) = crate::prompt::write_prompt_file(&prompt)?;
+    let (prompt_file, _) = harness_core::prompt::write_prompt_file(&prompt)?;
     let cmd_str = config
         .agent
         .command

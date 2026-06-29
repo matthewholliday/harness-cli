@@ -11,9 +11,18 @@ drives a fresh-context agent over the task list one task at a time and decides
 
 ## Build
 
+The repository is a Cargo workspace with three crates:
+
+- `harness-core` — the shared data/logic library (config, state, specs, the loop, the snapshot read model).
+- `harness-cli` — the `harness` command-line tool (CLI + terminal dashboard).
+- `harness-gui` — an optional desktop dashboard (egui).
+
 ```sh
-cargo build --release
-# binary at target/release/harness
+cargo build --release                  # builds every crate
+# CLI binary at target/release/harness
+# GUI binary at target/release/harness-gui
+
+cargo build --release -p harness-cli   # CLI only (no egui dependencies)
 ```
 
 ## Quick start
@@ -132,6 +141,23 @@ harness watch
 For a lighter-weight, log-only view (no TUI), `harness log --follow` streams a
 one-line summary of each iteration as it completes — handy over SSH or when piping
 to a file.
+
+### Desktop dashboard (egui)
+
+`harness-gui` is a native desktop dashboard rendering the same on-disk state as
+`harness watch`, plus things a terminal can't do well: **Start/Stop** controls
+that launch `harness build` for you, live streaming of the run's output, a spec
+browser, and a per-task phase grid.
+
+```sh
+harness-gui                 # search upward from the cwd for a .harness/ project
+harness-gui /path/to/proj   # or point it at a project root
+```
+
+Like `watch`, it never owns run state — it reads the loop's files on a timer and,
+when you press Start, shells out to the `harness` CLI. It resolves the CLI as
+`$HARNESS_BIN`, else a `harness` binary next to `harness-gui`, else `harness` on
+`PATH`.
 
 It shows:
 

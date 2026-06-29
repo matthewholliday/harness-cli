@@ -1,0 +1,16 @@
+[package]
+name = "harness-gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "harness-gui"
+path = "src/main.rs"
+
+[dependencies]
+harness-core = { path = "../harness-core" }
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+anyhow.workspace = true
+chrono.workspace = true

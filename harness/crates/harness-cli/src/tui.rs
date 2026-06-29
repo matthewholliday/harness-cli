@@ -8,7 +8,7 @@
 
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -26,18 +26,12 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 
-use crate::config::load_harness_config;
-use crate::spec::{list_specs, load_tasks, spec_dir, Task, TaskStatus};
-use crate::state::{load_state, IterationRecord, LoopState};
+use harness_core::snapshot::Snapshot;
+use harness_core::spec::{Task, TaskStatus};
+use harness_core::state::IterationRecord;
 
 /// How often we re-read the on-disk state.
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
-/// A run is considered "live" if any tracked file changed this recently.
-const LIVE_WINDOW: Duration = Duration::from_secs(8);
-/// How many recent iteration records to keep in the timeline.
-const RECENT_ITERS: usize = 12;
-/// How many trailing lines of progress.md to show.
-const PROGRESS_TAIL: usize = 200;
 
 // ── colours ───────────────────────────────────────────────────────────────────
 
@@ -63,154 +57,6 @@ fn status_glyph(s: &TaskStatus) -> &'static str {
         TaskStatus::Blocked => "✗ blocked",
         TaskStatus::Todo => "· todo",
     }
-}
-
-// ── snapshot ────────────────────────────────────────────────────────────────
-
-#[derive(Default)]
-struct Counts {
-    todo: usize,
-    in_progress: usize,
-    blocked: usize,
-    done: usize,
-}
-
-impl Counts {
-    fn total(&self) -> usize {
-        self.todo + self.in_progress + self.blocked + self.done
-    }
-}
-
-/// One self-contained read of everything the dashboard renders.
-struct Snapshot {
-    state: LoopState,
-    tasks: Vec<Task>,
-    counts: Counts,
-    phase_sequence: Vec<String>,
-    budget: u64,
-    recent: Vec<IterationRecord>,
-    progress_tail: Vec<String>,
-    last_activity: Option<SystemTime>,
-}
-
-impl Snapshot {
-    fn load(root: &Path) -> Self {
-        let state = load_state(root).unwrap_or_default();
-        let config = load_harness_config(root).unwrap_or_default();
-
-        let mut tasks = Vec::new();
-        for spec in list_specs(root).unwrap_or_default() {
-            if let Ok(ts) = load_tasks(&spec_dir(root, &spec)) {
-                tasks.extend(ts);
-            }
-        }
-        // Stable order: in-progress first, then by priority, then id.
-        tasks.sort_by(|a, b| {
-            let rank = |t: &Task| match t.status {
-                TaskStatus::InProgress => 0,
-                TaskStatus::Blocked => 1,
-                TaskStatus::Todo => 2,
-                TaskStatus::Done => 3,
-            };
-            rank(a)
-                .cmp(&rank(b))
-                .then(a.priority.cmp(&b.priority))
-                .then(a.id.cmp(&b.id))
-        });
-
-        let mut counts = Counts::default();
-        for t in &tasks {
-            match t.status {
-                TaskStatus::Todo => counts.todo += 1,
-                TaskStatus::InProgress => counts.in_progress += 1,
-                TaskStatus::Blocked => counts.blocked += 1,
-                TaskStatus::Done => counts.done += 1,
-            }
-        }
-
-        let budget = config.loop_config.max_iterations as u64;
-        let recent = load_recent_iterations(root, RECENT_ITERS);
-        let progress_tail = load_progress_tail(root, PROGRESS_TAIL);
-        let last_activity = newest_mtime(root);
-
-        Snapshot {
-            state,
-            tasks,
-            counts,
-            phase_sequence: config.loop_config.phase_sequence,
-            budget,
-            recent,
-            progress_tail,
-            last_activity,
-        }
-    }
-
-    /// Whether the loop appears to be actively running right now.
-    fn is_live(&self) -> bool {
-        if self.counts.in_progress > 0 {
-            return true;
-        }
-        match self.last_activity {
-            Some(t) => t.elapsed().map(|e| e < LIVE_WINDOW).unwrap_or(false),
-            None => false,
-        }
-    }
-}
-
-fn iterations_dir(root: &Path) -> PathBuf {
-    root.join(".harness").join("logs").join("iterations")
-}
-
-fn load_recent_iterations(root: &Path, n: usize) -> Vec<IterationRecord> {
-    let dir = iterations_dir(root);
-    let mut files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
-            .collect(),
-        Err(_) => return Vec::new(),
-    };
-    files.sort(); // timestamp-prefixed filenames sort chronologically
-    files
-        .iter()
-        .rev()
-        .take(n)
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .filter_map(|s| serde_json::from_str::<IterationRecord>(&s).ok())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev() // oldest → newest for display
-        .collect()
-}
-
-fn load_progress_tail(root: &Path, n: usize) -> Vec<String> {
-    let path = root.join(".harness").join("logs").join("progress.md");
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    lines[start..].iter().map(|s| s.to_string()).collect()
-}
-
-/// Newest modification time across the files the loop writes, used to tell
-/// whether a run is currently active.
-fn newest_mtime(root: &Path) -> Option<SystemTime> {
-    let mut newest: Option<SystemTime> = None;
-    let mut consider = |p: PathBuf| {
-        if let Ok(m) = std::fs::metadata(&p).and_then(|md| md.modified()) {
-            newest = Some(match newest {
-                Some(cur) if cur >= m => cur,
-                _ => m,
-            });
-        }
-    };
-    consider(root.join(".harness").join("logs").join("state.json"));
-    consider(root.join(".harness").join("logs").join("progress.md"));
-    if let Ok(rd) = std::fs::read_dir(iterations_dir(root)) {
-        for e in rd.flatten() {
-            consider(e.path());
-        }
-    }
-    newest
 }
 
 // ── app state ───────────────────────────────────────────────────────────────

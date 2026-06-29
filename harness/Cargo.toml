@@ -1,14 +1,16 @@
-[package]
-name = "harness"
+[workspace]
+resolver = "2"
+members = [
+    "crates/harness-core",
+    "crates/harness-cli",
+    "crates/harness-gui",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "harness"
-path = "src/main.rs"
-
-[dependencies]
-clap = { version = "4", features = ["derive"] }
+[workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -18,5 +20,9 @@ globset = "0.4"
 walkdir = "2"
 sha2 = "0.10"
 hex = "0.4"
+clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.28"
+eframe = "0.29"
+egui = "0.29"
+egui_extras = "0.29"
