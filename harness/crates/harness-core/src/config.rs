@@ -468,7 +468,9 @@ pub fn save_aclc_config(root: &Path, aclc: &AclcConfig) -> Result<()> {
     // throwaway TOML round-trip, then copy primitive values across.
     let s = toml::to_string(aclc).context("failed to serialize aclc config")?;
     let parsed: toml::Value = toml::from_str(&s).context("failed to re-parse aclc config")?;
-    let tbl = parsed.as_table().context("aclc did not serialize to a table")?;
+    let tbl = parsed
+        .as_table()
+        .context("aclc did not serialize to a table")?;
 
     for (k, v) in tbl {
         if k == "oracle" {
@@ -579,14 +581,20 @@ mod tests {
 
         let raw = std::fs::read_to_string(dir.join(".harness").join("harness.toml")).unwrap();
         assert!(raw.contains("# top comment"), "{raw}");
-        assert!(raw.contains("command = \"claude -p {prompt_file}\""), "{raw}");
+        assert!(
+            raw.contains("command = \"claude -p {prompt_file}\""),
+            "{raw}"
+        );
 
         let cfg = load_harness_config(&dir).unwrap();
         assert!(cfg.aclc_present);
         let resolved = resolve_aclc(&cfg, &GuardrailsConfig::default());
         assert_eq!(resolved.loop_mode, crate::aclc::LoopMode::UntilPass);
         assert_eq!(resolved.memory, crate::aclc::Memory::Compact);
-        assert_eq!(resolved.oracle.command.as_deref(), Some("pytest -q && mypy ."));
+        assert_eq!(
+            resolved.oracle.command.as_deref(),
+            Some("pytest -q && mypy .")
+        );
         assert!(resolved.oracle.protected);
 
         std::fs::remove_dir_all(&dir).ok();

@@ -224,14 +224,25 @@ pub fn validate(cfg: &AclcConfig) -> Vec<Finding> {
     let looping = cfg.loops();
 
     // ── §5.1 Hard constraints (MUST — reject) ──
-    if looping && cfg.oracle.command.as_deref().unwrap_or("").trim().is_empty() {
+    if looping
+        && cfg
+            .oracle
+            .command
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
         out.push(Finding::error(
             &["loop", "oracle.command"],
             "loop = until_pass requires oracle.command — a loop with no success oracle cannot terminate on success",
         ));
     }
     if cfg.max_attempts < 1 {
-        out.push(Finding::error(&["max_attempts"], "max_attempts must be ≥ 1"));
+        out.push(Finding::error(
+            &["max_attempts"],
+            "max_attempts must be ≥ 1",
+        ));
     }
     if cfg.memory_cap < 1 {
         out.push(Finding::error(&["memory_cap"], "memory_cap must be ≥ 1"));
@@ -293,9 +304,7 @@ pub fn validate(cfg: &AclcConfig) -> Vec<Finding> {
                 "memory = append grows unboundedly; context bloat and contradictory entries accumulate — prefer compact",
             ));
         }
-        if cfg.learning == Learning::Raw
-            && matches!(cfg.memory, Memory::Append | Memory::Compact)
-        {
+        if cfg.learning == Learning::Raw && matches!(cfg.memory, Memory::Append | Memory::Compact) {
             out.push(Finding::warn(
                 &["learning", "memory"],
                 "learning = raw under accumulation is low-signal noise that degrades later attempts — prefer reflection",
@@ -496,8 +505,7 @@ pub const JSON_SCHEMA: &str = r##"{
 pub fn write_json_schema(root: &Path) -> anyhow::Result<std::path::PathBuf> {
     use anyhow::Context;
     let dir = root.join(".harness").join("schema");
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let path = dir.join("aclc-0.1.schema.json");
     std::fs::write(&path, JSON_SCHEMA)
         .with_context(|| format!("failed to write {}", path.display()))?;
@@ -538,7 +546,9 @@ mod tests {
         };
         let f = validate(&c);
         assert!(has_errors(&f));
-        assert!(f.iter().any(|x| x.fields.contains(&"oracle.command".to_string())));
+        assert!(f
+            .iter()
+            .any(|x| x.fields.contains(&"oracle.command".to_string())));
     }
 
     #[test]
@@ -567,10 +577,14 @@ mod tests {
             ..Default::default()
         };
         let f = validate(&c);
-        assert!(f.iter().any(|x| x.fields == vec!["max_attempts".to_string()]
-            && x.severity == Severity::Error));
-        assert!(f.iter().any(|x| x.fields == vec!["memory_cap".to_string()]
-            && x.severity == Severity::Error));
+        assert!(
+            f.iter()
+                .any(|x| x.fields == vec!["max_attempts".to_string()]
+                    && x.severity == Severity::Error)
+        );
+        assert!(f
+            .iter()
+            .any(|x| x.fields == vec!["memory_cap".to_string()] && x.severity == Severity::Error));
     }
 
     fn oracle() -> OracleConfig {
@@ -591,8 +605,9 @@ mod tests {
         };
         let f = validate(&c);
         assert!(!has_errors(&f));
-        assert!(f.iter().any(|x| x.fields.contains(&"memory".to_string())
-            && x.severity == Severity::Warning));
+        assert!(f
+            .iter()
+            .any(|x| x.fields.contains(&"memory".to_string()) && x.severity == Severity::Warning));
     }
 
     #[test]
@@ -648,9 +663,9 @@ mod tests {
             learning: Learning::Raw,
             ..Default::default()
         };
-        assert!(validate(&c).iter().any(|x| x
-            .fields
-            .contains(&"learning".to_string())));
+        assert!(validate(&c)
+            .iter()
+            .any(|x| x.fields.contains(&"learning".to_string())));
     }
 
     #[test]
@@ -665,9 +680,9 @@ mod tests {
             learning: Learning::Reflection,
             ..Default::default()
         };
-        assert!(validate(&c).iter().any(|x| x
-            .fields
-            .contains(&"oracle.protected".to_string())));
+        assert!(validate(&c)
+            .iter()
+            .any(|x| x.fields.contains(&"oracle.protected".to_string())));
     }
 
     #[test]
@@ -681,10 +696,10 @@ mod tests {
             on_exhaustion: OnExhaustion::Clean,
             ..Default::default()
         };
-        assert!(validate(&c).iter().any(|x| x
-            .fields
-            .contains(&"on_exhaustion".to_string())
-            && x.fields.contains(&"workspace".to_string())));
+        assert!(validate(&c)
+            .iter()
+            .any(|x| x.fields.contains(&"on_exhaustion".to_string())
+                && x.fields.contains(&"workspace".to_string())));
     }
 
     #[test]
@@ -696,10 +711,10 @@ mod tests {
             memory: Memory::Off,
             ..Default::default()
         };
-        assert!(validate(&c).iter().any(|x| x
-            .fields
-            .contains(&"workspace".to_string())
-            && x.fields.contains(&"memory".to_string())));
+        assert!(validate(&c)
+            .iter()
+            .any(|x| x.fields.contains(&"workspace".to_string())
+                && x.fields.contains(&"memory".to_string())));
     }
 
     // ── presets ──

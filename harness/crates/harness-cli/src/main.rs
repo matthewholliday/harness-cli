@@ -1923,10 +1923,8 @@ fn cmd_explain(
     let is_first = state.iteration_count == 0;
 
     // Mirror the loop: show ACLC memory if it is active for this project.
-    let aclc = harness_core::config::resolve_aclc(
-        &config,
-        &harness_core::config::load_guardrails(root)?,
-    );
+    let aclc =
+        harness_core::config::resolve_aclc(&config, &harness_core::config::load_guardrails(root)?);
     let learnings = if config.aclc_present && aclc.memory_on() {
         harness_core::memory::render_for_prompt(&harness_core::memory::load_entries(
             root, &spec_name, &task.id,
@@ -2184,7 +2182,10 @@ fn cmd_aclc(root: &Path, cmd: AclcCmd) -> Result<i32> {
                 eprintln!("{sev} [{}]: {}", f.fields.join(", "), f.message);
             }
             save_aclc_config(root, &aclc)?;
-            println!("✓ wrote preset '{}' to .harness/harness.toml", preset.name());
+            println!(
+                "✓ wrote preset '{}' to .harness/harness.toml",
+                preset.name()
+            );
             if aclc::has_errors(&findings) {
                 println!(
                     "  add an oracle with `harness aclc preset {} --oracle \"<cmd>\"` before running",
@@ -2281,9 +2282,10 @@ fn cmd_doctor(root: &Path) -> Result<i32> {
                 !harness_core::aclc::has_errors(&findings),
                 "run `harness aclc validate` for details"
             );
-            for f in findings.iter().filter(|f| {
-                matches!(f.severity, harness_core::aclc::Severity::Warning)
-            }) {
+            for f in findings
+                .iter()
+                .filter(|f| matches!(f.severity, harness_core::aclc::Severity::Warning))
+            {
                 println!("  ⚠ aclc [{}]: {}", f.fields.join(", "), f.message);
             }
         }
@@ -2711,10 +2713,7 @@ fn file_similarity(a: &str, b: &str) -> f64 {
 /// Every later pass is scored against pass 1 (the reference); each file's score
 /// is the worst it achieves across passes, and the overall score is a
 /// line-count-weighted mean so large files dominate proportionally.
-fn report_convergence(
-    spec_name: &str,
-    snapshots: &[std::collections::BTreeMap<String, String>],
-) {
+fn report_convergence(spec_name: &str, snapshots: &[std::collections::BTreeMap<String, String>]) {
     let n = snapshots.len();
     let reference = &snapshots[0];
 
@@ -3278,7 +3277,11 @@ mod convergence_tests {
     fn unrelated_files_score_low() {
         let a = "alpha\nbravo\ncharlie\ndelta\n";
         let b = "one\ntwo\nthree\nfour\n";
-        assert!(file_similarity(a, b) < 0.25, "got {}", file_similarity(a, b));
+        assert!(
+            file_similarity(a, b) < 0.25,
+            "got {}",
+            file_similarity(a, b)
+        );
     }
 
     #[test]

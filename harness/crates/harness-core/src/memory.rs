@@ -198,7 +198,10 @@ mod tests {
         update(&root, "s", "T-3", Memory::Append, 8, "alpha line").unwrap();
         update(&root, "s", "T-3", Memory::Append, 8, "beta\nmultiline").unwrap();
         let e = load_entries(&root, "s", "T-3");
-        assert_eq!(e, vec!["alpha line".to_string(), "beta\nmultiline".to_string()]);
+        assert_eq!(
+            e,
+            vec!["alpha line".to_string(), "beta\nmultiline".to_string()]
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -206,7 +209,15 @@ mod tests {
     fn compact_caps_to_newest() {
         let root = tmp();
         for i in 0..10 {
-            update(&root, "s", "T-4", Memory::Compact, 3, &format!("lesson {i}")).unwrap();
+            update(
+                &root,
+                "s",
+                "T-4",
+                Memory::Compact,
+                3,
+                &format!("lesson {i}"),
+            )
+            .unwrap();
         }
         let e = load_entries(&root, "s", "T-4");
         assert_eq!(e.len(), 3);

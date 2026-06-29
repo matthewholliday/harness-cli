@@ -51,7 +51,10 @@ fn scaffold(name: &str, agent_sh: &str, oracle_cmd: &str, aclc_toml: &str) -> st
             agent.display()
         ),
     );
-    write(&root.join(".harness/prompts/loop.md"), "Do task {task_id}.\n");
+    write(
+        &root.join(".harness/prompts/loop.md"),
+        "Do task {task_id}.\n",
+    );
 
     // One spec with one task that owns work/**.
     write(
@@ -70,7 +73,10 @@ fn scaffold(name: &str, agent_sh: &str, oracle_cmd: &str, aclc_toml: &str) -> st
 
     // Git repo with a baseline commit (only the tracked, non-ignored files).
     sh(&root, "git init -q");
-    sh(&root, "git config user.email t@t.t && git config user.name t");
+    sh(
+        &root,
+        "git config user.email t@t.t && git config user.name t",
+    );
     sh(&root, "git add -A && git commit -q -m baseline");
     root
 }
@@ -89,22 +95,38 @@ fn task_status(root: &Path) -> String {
 fn until_pass_loops_then_passes_and_records_memory() {
     let agent = "#!/bin/sh\nmkdir -p work\nn=$(cat work/n 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > work/n\necho \"attempt $n\" > work/out.txt\nexit 0\n";
     // Oracle passes once the counter reaches 2; emits a partial score.
-    let oracle = "n=$(cat work/n 2>/dev/null || echo 0); echo ACLC_SCORE=$n/2; [ \\\"$n\\\" -ge 2 ]";
+    let oracle =
+        "n=$(cat work/n 2>/dev/null || echo 0); echo ACLC_SCORE=$n/2; [ \\\"$n\\\" -ge 2 ]";
     let aclc = "[aclc]\nloop = \"until_pass\"\nworkspace = \"continue\"\nmemory = \"compact\"\nmemory_cap = 8\nlearning = \"raw\"\nmax_attempts = 5\non_exhaustion = \"keep_best\"\n";
 
     let root = scaffold("pass", agent, oracle, aclc);
-    let code = run(&root, RunOptions { spec_filter: None, once: false, max_iterations: None, dry_run: false }).unwrap();
+    let code = run(
+        &root,
+        RunOptions {
+            spec_filter: None,
+            once: false,
+            max_iterations: None,
+            dry_run: false,
+        },
+    )
+    .unwrap();
 
     assert_eq!(code, 0, "loop should exit clean");
     assert_eq!(task_status(&root), "done");
     let out = std::fs::read_to_string(root.join("work/out.txt")).unwrap();
-    assert!(out.contains("attempt 2"), "final workspace = passing attempt: {out}");
+    assert!(
+        out.contains("attempt 2"),
+        "final workspace = passing attempt: {out}"
+    );
 
     // A learning was recorded after the first failed attempt (raw → compact).
     let learnings = root.join(".harness/logs/learnings/demo/T-1.md");
     assert!(learnings.exists(), "LEARNINGS.md should exist");
     let txt = std::fs::read_to_string(&learnings).unwrap();
-    assert!(txt.contains("ACLC_SCORE=1/2"), "raw learning captured the failure signal: {txt}");
+    assert!(
+        txt.contains("ACLC_SCORE=1/2"),
+        "raw learning captured the failure signal: {txt}"
+    );
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -118,7 +140,16 @@ fn exhaustion_blocks_task_and_returns_two() {
     let aclc = "[aclc]\nloop = \"until_pass\"\nworkspace = \"fresh\"\nmemory = \"off\"\nmax_attempts = 2\non_exhaustion = \"keep_last\"\n";
 
     let root = scaffold("exhaust", agent, oracle, aclc);
-    let code = run(&root, RunOptions { spec_filter: None, once: false, max_iterations: None, dry_run: false }).unwrap();
+    let code = run(
+        &root,
+        RunOptions {
+            spec_filter: None,
+            once: false,
+            max_iterations: None,
+            dry_run: false,
+        },
+    )
+    .unwrap();
 
     assert_eq!(code, 2, "blocked task → exit 2");
     assert_eq!(task_status(&root), "blocked");
