@@ -3,7 +3,8 @@
 //!
 //! The window is split in two:
 //!
-//! * **Left column** — every spec under `.specs/`, selectable.
+//! * **Left column** — every spec under `.specs/`, selectable, plus a
+//!   *new spec* link that drafts one from a typed description or a brief file.
 //! * **Right main area** — an accordion of the selected spec's five layers, in
 //!   production order: **requirements → design → tasks → code → evals**. Each
 //!   section shows that layer's status and content, and offers a *Generate*
@@ -82,6 +83,16 @@ struct GenDialog {
     prompt: String,
 }
 
+// ── pending new-spec creation, captured by the modal window ───────────────────
+#[derive(Default)]
+struct NewSpecDialog {
+    name: String,
+    brief: String,
+    /// When set, the brief comes from this file (`--from`) and the typed brief
+    /// is ignored; clearing it returns to the text box.
+    file: Option<PathBuf>,
+}
+
 /// Everything the accordion needs for the selected spec, read once per tick.
 struct Content {
     spec: String,
@@ -129,6 +140,9 @@ struct GuiApp {
     /// The open generation modal, if any.
     dialog: Option<GenDialog>,
 
+    /// The open "new spec" modal, if any.
+    new_spec: Option<NewSpecDialog>,
+
     /// The running CLI job (generation or eval run) and its streamed output.
     run: Option<RunHandle>,
     log: Vec<String>,
@@ -151,6 +165,7 @@ impl GuiApp {
             content,
             last_load: Instant::now(),
             dialog: None,
+            new_spec: None,
             run: None,
             log: Vec::new(),
             last_exit: None,
@@ -187,6 +202,7 @@ impl GuiApp {
         self.log.clear();
         self.last_exit = None;
         self.dialog = None;
+        self.new_spec = None;
         self.set_all_open = None;
         self.specs = list_specs(&self.root).unwrap_or_default();
         self.selected = self.specs.first().cloned();
@@ -261,6 +277,7 @@ impl eframe::App for GuiApp {
         self.bottom_log(ctx);
         self.central_accordion(ctx);
         self.generation_modal(ctx);
+        self.new_spec_modal(ctx);
 
         // Keep polling a live job (and the disk timer) without user input.
         if self.is_running() {
@@ -338,19 +355,58 @@ impl GuiApp {
                     });
                 });
                 ui.separator();
-                if self.specs.is_empty() {
-                    ui.add_space(8.0);
-                    ui.colored_label(DIM, "No specs under .specs/.");
-                    return;
-                }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let specs = self.specs.clone();
-                    for spec in specs {
-                        let selected = self.selected.as_deref() == Some(spec.as_str());
-                        if ui.selectable_label(selected, &spec).clicked() && !selected {
-                            self.select(&spec);
+                // "New spec" — pinned to the bottom of the column, below the
+                // list (and still shown when there are no specs yet, so a fresh
+                // project can bootstrap its first one). Disabled while a job
+                // runs, since creation shells out to a CLI job and only one can
+                // run at a time.
+                egui::TopBottomPanel::bottom("new_spec_footer")
+                    .show_separator_line(false)
+                    .show_inside(ui, |ui| {
+                        ui.add_space(4.0);
+                        let running = self.is_running();
+                        let new_link = ui.add_enabled(
+                            !running,
+                            egui::Link::new(
+                                RichText::new("+ new spec")
+                                    .color(if running { DIM } else { ACCENT }),
+                            ),
+                        );
+                        if running {
+                            new_link.on_hover_text("Wait for the running job to finish.");
+                        } else if new_link
+                            .on_hover_text("Draft a new spec from a description or a file")
+                            .clicked()
+                        {
+                            self.new_spec = Some(NewSpecDialog::default());
                         }
+                    });
+                // The spec list fills the space above the footer. A justified
+                // layout makes every button the full column width (with padding)
+                // so they all match instead of hugging their label.
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    if self.specs.is_empty() {
+                        ui.add_space(8.0);
+                        ui.colored_label(DIM, "No specs under .specs/.");
+                        return;
                     }
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.with_layout(
+                            egui::Layout::top_down_justified(egui::Align::LEFT),
+                            |ui| {
+                                let specs = self.specs.clone();
+                                for spec in specs {
+                                    let selected =
+                                        self.selected.as_deref() == Some(spec.as_str());
+                                    if ui.selectable_label(selected, &spec).clicked()
+                                        && !selected
+                                    {
+                                        self.select(&spec);
+                                    }
+                                }
+                            },
+                        );
+                    });
                 });
             });
 
@@ -733,6 +789,115 @@ impl GuiApp {
             self.dialog = None;
         }
     }
+
+    /// The "new spec" modal: a name plus either a typed description or a picked
+    /// brief file, run through `harness spec new`.
+    fn new_spec_modal(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.new_spec.as_mut() else {
+            return;
+        };
+        // rfd's picker is seeded at the project root; clone so the panel closure
+        // doesn't need to borrow `self` while `dialog` is borrowed mutably.
+        let root = self.root.clone();
+
+        let mut open = true;
+        let mut create = false;
+        let mut cancel = false;
+
+        let name_ok = is_valid_spec_name(dialog.name.trim());
+        let has_brief = dialog.file.is_some() || !dialog.brief.trim().is_empty();
+        let can_create = name_ok && has_brief;
+
+        egui::Window::new("New spec")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(440.0);
+
+                ui.label("Spec name:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut dialog.name)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("lowercase-with-dashes, e.g. calculator"),
+                );
+                if !dialog.name.trim().is_empty() && !name_ok {
+                    ui.colored_label(FAIL, "Name must match ^[a-z0-9][a-z0-9-]*$.");
+                }
+                ui.add_space(8.0);
+
+                // Either a typed description or a brief file — never both. The
+                // text box greys out once a file is chosen.
+                let from_file = dialog.file.is_some();
+                ui.label("Description:");
+                ui.add_enabled(
+                    !from_file,
+                    egui::TextEdit::multiline(&mut dialog.brief)
+                        .desired_rows(5)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Describe what this spec should do…"),
+                );
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Choose file…").clicked() {
+                        if let Some(p) = pick_brief_file(&root) {
+                            dialog.file = Some(p);
+                        }
+                    }
+                    match &dialog.file {
+                        Some(p) => {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(file_label(p)).color(ACCENT),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(p.display().to_string());
+                            if ui.link("clear").clicked() {
+                                dialog.file = None;
+                            }
+                        }
+                        None => {
+                            ui.colored_label(DIM, "or load the description from a file.");
+                        }
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.colored_label(DIM, format!("$ harness {}", new_spec_preview(dialog)));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let create_btn = ui.add_enabled(can_create, egui::Button::new("Create"));
+                    if create_btn
+                        .on_hover_text(if can_create {
+                            "Run `harness spec new` and stream its output below."
+                        } else {
+                            "Enter a valid name and a description (or pick a file) first."
+                        })
+                        .clicked()
+                    {
+                        create = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if create && can_create {
+            let args = new_spec_command(dialog);
+            let name = dialog.name.trim().to_string();
+            self.new_spec = None;
+            // Keep the new spec selected so the accordion focuses it once the
+            // job finishes and the spec list reloads from disk.
+            self.selected = Some(name);
+            self.launch(args);
+        } else if cancel || !open {
+            self.new_spec = None;
+        }
+    }
 }
 
 // ── command mapping ──────────────────────────────────────────────────────────
@@ -768,6 +933,76 @@ fn preview_command(layer: Layer, spec: &str, prompt: &str) -> String {
         }
     }
     args.join(" ")
+}
+
+/// The `spec new` args for the dialog. A picked file (`--from`) wins over the
+/// typed description (`--brief`); the name is trimmed.
+fn new_spec_command(dialog: &NewSpecDialog) -> Vec<String> {
+    let mut a = vec!["spec".into(), "new".into(), dialog.name.trim().to_string()];
+    if let Some(path) = &dialog.file {
+        a.push("--from".into());
+        a.push(path.display().to_string());
+    } else {
+        a.push("--brief".into());
+        a.push(dialog.brief.trim().to_string());
+    }
+    a
+}
+
+/// A human-readable preview of the `spec new` command the modal will run, with
+/// the brief collapsed to a single quoted, truncated line.
+fn new_spec_preview(dialog: &NewSpecDialog) -> String {
+    let name = match dialog.name.trim() {
+        "" => "<name>",
+        n => n,
+    };
+    if let Some(path) = &dialog.file {
+        format!("spec new {name} --from {}", path.display())
+    } else {
+        let brief = dialog.brief.split_whitespace().collect::<Vec<_>>().join(" ");
+        if brief.is_empty() {
+            format!("spec new {name} --brief …")
+        } else {
+            format!("spec new {name} --brief \"{}\"", ellipsize(&brief, 48))
+        }
+    }
+}
+
+/// Mirror of the CLI's `validate_spec_name`, plus a non-empty check, so the
+/// modal can gate the Create button before shelling out.
+fn is_valid_spec_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Open a native file picker (seeded at the project root) for a brief file.
+/// Blocks the UI thread while open, which is fine for a one-shot picker.
+fn pick_brief_file(start: &Path) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().add_filter("text", &["md", "txt"]);
+    if start.is_dir() {
+        dialog = dialog.set_directory(start);
+    }
+    dialog.pick_file()
+}
+
+/// The file name of a path for display, falling back to the full path.
+fn file_label(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string())
+}
+
+/// Truncate `s` to at most `max` characters, appending an ellipsis when cut.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{head}…")
+    }
 }
 
 /// The leaf subcommand name, for the "no prompt" note.
