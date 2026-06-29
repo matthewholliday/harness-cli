@@ -1733,6 +1733,7 @@ dependencies = [
  "harness-core",
  "ratatui",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -1747,6 +1748,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+ "toml_edit 0.22.27",
  "walkdir",
 ]
 

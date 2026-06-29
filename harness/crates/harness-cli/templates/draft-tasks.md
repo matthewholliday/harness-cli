@@ -42,14 +42,13 @@ One JSON object per line. Rules:
   requirement's acceptance_criteria.
 - `files_hint`: paths or globs the agent is likely to touch — helps the agent
   scope its work.
-- `max_attempts`: 3 is a safe default.
 - `status` must be `"todo"` for every task.
 - Timestamps: use `"2026-01-01T00:00:00Z"` as a placeholder.
 
 Schema (one object per line — no trailing comma, one per line):
 
 ```
-{"id":"T-001","spec":"{spec_name}","title":"<imperative verb phrase>","requirements":["REQ-001"],"status":"todo","priority":1,"depends_on":[],"hooks":["run_build","run_lint","run_unit_tests"],"acceptance":["<assertion>"],"files_hint":["<path>"],"attempts":0,"max_attempts":3,"notes":"","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+{"id":"T-001","spec":"{spec_name}","title":"<imperative verb phrase>","requirements":["REQ-001"],"status":"todo","priority":1,"depends_on":[],"hooks":["run_build","run_lint","run_unit_tests"],"acceptance":["<assertion>"],"files_hint":["<path>"],"attempts":0,"notes":"","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
 ```
 
 Every `requirements` entry must reference a REQ-### id that exists in layer 1,

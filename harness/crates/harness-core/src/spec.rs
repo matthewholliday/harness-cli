@@ -31,10 +31,10 @@ pub struct Task {
     pub acceptance: Vec<String>,
     #[serde(default)]
     pub files_hint: Vec<String>,
+    /// Managed by the harness. The retry cap is global, not per-task — see
+    /// `[budgets].max_attempts_per_task` in guardrails.toml.
     #[serde(default)]
     pub attempts: u32,
-    #[serde(default = "default_max_attempts")]
-    pub max_attempts: u32,
     #[serde(default)]
     pub notes: Option<String>,
     /// Managed by the harness. Captures the failing gate output (or agent error)
@@ -52,10 +52,6 @@ pub struct Task {
     pub completed_phases: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-}
-
-fn default_max_attempts() -> u32 {
-    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

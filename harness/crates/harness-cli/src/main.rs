@@ -110,6 +110,11 @@ enum Commands {
     },
     /// Validate environment and config (agent adapter, gates, git).
     Doctor,
+    /// Inspect and configure the ACLC loop control surface.
+    Aclc {
+        #[command(subcommand)]
+        cmd: AclcCmd,
+    },
     /// Preview the exact prompt the agent would receive for a task (no run).
     Explain {
         /// Task id to preview (e.g. T-003).
@@ -161,6 +166,25 @@ enum Commands {
         #[arg(long)]
         follow: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AclcCmd {
+    /// Print the resolved ACLC configuration and matching preset.
+    Show,
+    /// Validate the ACLC configuration; exits non-zero if any error is present.
+    Validate,
+    /// Apply a named preset to [aclc] in harness.toml
+    /// (single_pass | resample | refine | refine_notes | resample_notes).
+    Preset {
+        /// Preset name.
+        name: String,
+        /// Oracle command to record (required for the looping presets).
+        #[arg(long)]
+        oracle: Option<String>,
+    },
+    /// Write the canonical ACLC JSON Schema to .harness/schema/.
+    Schema,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -399,6 +423,10 @@ fn dispatch(cli: Cli) -> Result<i32> {
         Commands::Doctor => {
             let root = find_project_root()?;
             cmd_doctor(&root)
+        }
+        Commands::Aclc { cmd } => {
+            let root = find_project_root()?;
+            cmd_aclc(&root, cmd)
         }
         Commands::Explain { task, spec, phase } => {
             let root = find_project_root()?;
@@ -1412,7 +1440,6 @@ fn cmd_sync(root: &Path, name: &str, write: bool, regen_tasks: bool) -> Result<(
                 acceptance: req.acceptance_criteria.clone(),
                 files_hint: vec![],
                 attempts: 0,
-                max_attempts: 3,
                 notes: None,
                 last_failure: None,
                 phases: vec![],
@@ -1880,6 +1907,19 @@ fn cmd_explain(
     let state = load_state(root)?;
     let is_first = state.iteration_count == 0;
 
+    // Mirror the loop: show ACLC memory if it is active for this project.
+    let aclc = harness_core::config::resolve_aclc(
+        &config,
+        &harness_core::config::load_guardrails(root)?,
+    );
+    let learnings = if config.aclc_present && aclc.memory_on() {
+        harness_core::memory::render_for_prompt(&harness_core::memory::load_entries(
+            root, &spec_name, &task.id,
+        ))
+    } else {
+        String::new()
+    };
+
     let prompt = compose_prompt(
         root,
         &config,
@@ -1888,6 +1928,7 @@ fn cmd_explain(
         is_first,
         current_phase.as_deref(),
         phase_template,
+        &learnings,
     )?;
 
     let agent_cmd = phase_cfg
@@ -2067,6 +2108,84 @@ fn cmd_logs(root: &Path, iteration: Option<u64>, follow: bool) -> Result<i32> {
     Ok(0)
 }
 
+fn cmd_aclc(root: &Path, cmd: AclcCmd) -> Result<i32> {
+    use harness_core::aclc::{self, Preset};
+    use harness_core::config::{load_guardrails, resolve_aclc, save_aclc_config};
+
+    let config = load_harness_config(root)?;
+    let guardrails = load_guardrails(root)?;
+
+    match cmd {
+        AclcCmd::Show => {
+            let aclc = resolve_aclc(&config, &guardrails);
+            let preset = Preset::matching(&aclc)
+                .map(|p| p.name().to_string())
+                .unwrap_or_else(|| "custom".to_string());
+            println!("# resolved ACLC configuration (preset: {preset})");
+            if !config.aclc_present {
+                println!("# note: no [aclc] table present — derived from legacy [loop]/[budgets]");
+            }
+            print!("{}", toml::to_string_pretty(&aclc).unwrap_or_default());
+            Ok(0)
+        }
+        AclcCmd::Validate => {
+            let aclc = resolve_aclc(&config, &guardrails);
+            let findings = aclc::validate(&aclc);
+            if findings.is_empty() {
+                println!("✓ ACLC configuration valid — no findings");
+                return Ok(0);
+            }
+            for f in &findings {
+                let sev = match f.severity {
+                    aclc::Severity::Error => "error",
+                    aclc::Severity::Warning => "warning",
+                };
+                println!("{sev} [{}]: {}", f.fields.join(", "), f.message);
+            }
+            Ok(if aclc::has_errors(&findings) { 1 } else { 0 })
+        }
+        AclcCmd::Preset { name, oracle } => {
+            let Some(preset) = Preset::from_name(&name) else {
+                anyhow::bail!(
+                    "unknown preset '{name}' — choose one of: {}",
+                    Preset::all()
+                        .iter()
+                        .map(|p| p.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            };
+            let mut aclc = preset.config();
+            if let Some(cmd) = oracle {
+                aclc.oracle.command = Some(cmd);
+            }
+            // Warn early if the chosen preset needs an oracle and none was given.
+            let findings = aclc::validate(&aclc);
+            for f in &findings {
+                let sev = match f.severity {
+                    aclc::Severity::Error => "error",
+                    aclc::Severity::Warning => "warning",
+                };
+                eprintln!("{sev} [{}]: {}", f.fields.join(", "), f.message);
+            }
+            save_aclc_config(root, &aclc)?;
+            println!("✓ wrote preset '{}' to .harness/harness.toml", preset.name());
+            if aclc::has_errors(&findings) {
+                println!(
+                    "  add an oracle with `harness aclc preset {} --oracle \"<cmd>\"` before running",
+                    preset.name()
+                );
+            }
+            Ok(0)
+        }
+        AclcCmd::Schema => {
+            let path = aclc::write_json_schema(root)?;
+            println!("✓ wrote {}", path.display());
+            Ok(0)
+        }
+    }
+}
+
 fn cmd_doctor(root: &Path) -> Result<i32> {
     let mut ok = true;
 
@@ -2136,6 +2255,22 @@ fn cmd_doctor(root: &Path) -> Result<i32> {
                 exists,
                 "create the hook stub"
             );
+        }
+
+        // ACLC: validate the control surface and report findings (§6).
+        if let Ok(g) = harness_core::config::load_guardrails(root) {
+            let aclc = harness_core::config::resolve_aclc(c, &g);
+            let findings = harness_core::aclc::validate(&aclc);
+            check!(
+                "aclc config valid",
+                !harness_core::aclc::has_errors(&findings),
+                "run `harness aclc validate` for details"
+            );
+            for f in findings.iter().filter(|f| {
+                matches!(f.severity, harness_core::aclc::Severity::Warning)
+            }) {
+                println!("  ⚠ aclc [{}]: {}", f.fields.join(", "), f.message);
+            }
         }
 
         if !c.loop_config.phase_sequence.is_empty() {

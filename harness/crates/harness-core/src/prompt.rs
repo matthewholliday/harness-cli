@@ -74,6 +74,7 @@ fn load_template(
         .with_context(|| format!("Failed to read loop.md at {:?}", loop_path))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compose_prompt(
     root: &Path,
     _config: &HarnessConfig,
@@ -84,6 +85,9 @@ pub fn compose_prompt(
     phase_name: Option<&str>,
     // Relative path to the phase-specific prompt template, if configured.
     phase_template: Option<&str>,
+    // ACLC memory rendered for the prompt (LEARNINGS.md), or "" when memory is
+    // off / empty. Injected via the `{learnings}` placeholder and as a section.
+    learnings: &str,
 ) -> Result<String> {
     let template = load_template(root, is_first_iteration, phase_template)?;
 
@@ -131,6 +135,8 @@ pub fn compose_prompt(
         _ => String::new(),
     };
 
+    let learnings_trimmed = learnings.trim();
+
     let vars: &[(&str, &str)] = &[
         ("task_id", &task.id),
         ("task_title", &task.title),
@@ -143,9 +149,18 @@ pub fn compose_prompt(
         ("design_excerpt", &design_excerpt),
         ("phase_name", phase_name_str),
         ("last_failure", &last_failure),
+        ("learnings", learnings_trimmed),
     ];
 
     let mut body = substitute(&template, vars);
+
+    // If the template did not place {learnings} itself, append a Lessons section
+    // so accumulated memory is always visible to the agent (§4 step 2).
+    if !learnings_trimmed.is_empty() && !template.contains("{learnings}") {
+        body.push_str(&format!(
+            "\n\n## Lessons from earlier attempts\nThese were recorded by the harness after previous failed attempts on this task. Apply them; do not repeat past mistakes.\n\n{learnings_trimmed}"
+        ));
+    }
 
     let phase_header = if let Some(p) = phase_name {
         format!("\n**Phase:** {p}")

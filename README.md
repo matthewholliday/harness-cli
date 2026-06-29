@@ -150,7 +150,7 @@ Each iteration:
    short-circuits the iteration.
 5. All blocking gates pass → mark `done`, clear the stored failure, optionally
    `git commit`. Otherwise capture the failure, increment `attempts`, and park as
-   `blocked` once `max_attempts` is reached.
+   `blocked` once the global `[budgets].max_attempts_per_task` cap is reached.
 6. Write a structured iteration record and update `state.json` / `progress.md`.
 
 State lives entirely on disk (`.harness/`, `.specs/`), so a run is safe to
@@ -285,7 +285,7 @@ A task in `.specs/<name>/3-tasks.jsonl` can override the default hook set via it
 but no tests yet:
 
 ```json
-{"id":"T-001","spec":"api","title":"Add User type and zod schema","requirements":["REQ-001"],"status":"todo","priority":1,"depends_on":[],"hooks":["run_build","run_lint"],"acceptance":["User schema parses a valid payload","tsc passes"],"files_hint":["src/models/user.ts"],"attempts":0,"max_attempts":3,"notes":"","created_at":"2026-06-20T00:00:00Z","updated_at":"2026-06-20T00:00:00Z"}
+{"id":"T-001","spec":"api","title":"Add User type and zod schema","requirements":["REQ-001"],"status":"todo","priority":1,"depends_on":[],"hooks":["run_build","run_lint"],"acceptance":["User schema parses a valid payload","tsc passes"],"files_hint":["src/models/user.ts"],"attempts":0,"notes":"","created_at":"2026-06-20T00:00:00Z","updated_at":"2026-06-20T00:00:00Z"}
 ```
 
 Tasks that omit `hooks` fall back to `[hooks].default` from `harness.toml`.
@@ -302,8 +302,8 @@ harness build api                # drive the loop; each task is built/linted/tes
 If `tsc` or Vitest fails, the iteration fails: `harness` increments the task's
 `attempts`, restores the working tree to the last clean commit (because
 `reset_on_failure = true`), and either retries or parks the task as `blocked`
-once `max_attempts` is hit — so a broken type or red test never gets recorded as
-done on the agent's say-so.
+once the global `[budgets].max_attempts_per_task` cap is hit — so a broken type
+or red test never gets recorded as done on the agent's say-so.
 
 ## Status
 

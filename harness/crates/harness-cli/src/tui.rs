@@ -292,7 +292,7 @@ fn draw_tasks(f: &mut Frame, area: Rect, app: &App) {
     let rows = s.tasks.iter().map(|t| {
         let sc = status_color(&t.status);
         let attempts = if t.attempts > 0 {
-            format!("{}/{}", t.attempts, t.max_attempts)
+            format!("{}/{}", t.attempts, s.max_attempts)
         } else {
             "—".to_string()
         };

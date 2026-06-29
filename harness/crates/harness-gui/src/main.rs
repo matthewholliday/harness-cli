@@ -83,6 +83,36 @@ struct GenDialog {
     prompt: String,
 }
 
+// ── global settings, captured by the settings modal ───────────────────────────
+/// The editable view of `[budgets]` from guardrails.toml. Seeded from disk when
+/// the modal opens; written back on Save.
+struct SettingsDialog {
+    max_attempts: u32,
+    max_iterations: u32,
+    /// Whether the project manages its loop via the ACLC `[aclc]` table. When
+    /// off, Save touches only `[budgets]` (legacy behaviour).
+    aclc_enabled: bool,
+    /// The editable ACLC control surface.
+    aclc: harness_core::aclc::AclcConfig,
+    /// A save error to show inline, instead of silently failing.
+    error: Option<String>,
+}
+
+impl SettingsDialog {
+    fn load(root: &Path) -> SettingsDialog {
+        let config = harness_core::config::load_harness_config(root).unwrap_or_default();
+        let guardrails = harness_core::config::load_guardrails(root).unwrap_or_default();
+        let aclc = harness_core::config::resolve_aclc(&config, &guardrails);
+        SettingsDialog {
+            max_attempts: guardrails.budgets.max_attempts_per_task,
+            max_iterations: guardrails.budgets.max_iterations,
+            aclc_enabled: config.aclc_present,
+            aclc,
+            error: None,
+        }
+    }
+}
+
 // ── pending new-spec creation, captured by the modal window ───────────────────
 #[derive(Default)]
 struct NewSpecDialog {
@@ -143,6 +173,9 @@ struct GuiApp {
     /// The open "new spec" modal, if any.
     new_spec: Option<NewSpecDialog>,
 
+    /// The open global-settings modal, if any.
+    settings: Option<SettingsDialog>,
+
     /// The running CLI job (generation or eval run) and its streamed output.
     run: Option<RunHandle>,
     log: Vec<String>,
@@ -166,6 +199,7 @@ impl GuiApp {
             last_load: Instant::now(),
             dialog: None,
             new_spec: None,
+            settings: None,
             run: None,
             log: Vec::new(),
             last_exit: None,
@@ -203,6 +237,7 @@ impl GuiApp {
         self.last_exit = None;
         self.dialog = None;
         self.new_spec = None;
+        self.settings = None;
         self.set_all_open = None;
         self.specs = list_specs(&self.root).unwrap_or_default();
         self.selected = self.specs.first().cloned();
@@ -278,6 +313,7 @@ impl eframe::App for GuiApp {
         self.central_accordion(ctx);
         self.generation_modal(ctx);
         self.new_spec_modal(ctx);
+        self.settings_modal(ctx);
 
         // Keep polling a live job (and the disk timer) without user input.
         if self.is_running() {
@@ -379,6 +415,17 @@ impl GuiApp {
                             .clicked()
                         {
                             self.new_spec = Some(NewSpecDialog::default());
+                        }
+                        ui.add_space(2.0);
+                        // Global run budgets live in guardrails.toml, not per
+                        // spec — editable any time, since the loop only reads
+                        // them at the start of a run.
+                        if ui
+                            .link("settings")
+                            .on_hover_text("Edit global run budgets (max attempts, max iterations)")
+                            .clicked()
+                        {
+                            self.settings = Some(SettingsDialog::load(&self.root));
                         }
                     });
                 // The spec list fills the space above the footer. A justified
@@ -896,6 +943,313 @@ impl GuiApp {
             self.launch(args);
         } else if cancel || !open {
             self.new_spec = None;
+        }
+    }
+
+    /// The settings modal: the global `[budgets]` values plus the ACLC loop
+    /// control surface (`[aclc]`), written straight to disk — the loop reads them
+    /// fresh at the next run.
+    fn settings_modal(&mut self, ctx: &egui::Context) {
+        use harness_core::aclc::{
+            self, Learning, LoopMode, Memory, OnExhaustion, Preset, Severity, Workspace,
+        };
+
+        let Some(dialog) = self.settings.as_mut() else {
+            return;
+        };
+        // Cloned so the save call below doesn't collide with the borrow of
+        // `self.settings` that `dialog` holds.
+        let root = self.root.clone();
+        let warn_color = egui::Color32::from_rgb(0xd2, 0x99, 0x22);
+
+        let mut open = true;
+        let mut save = false;
+        let mut cancel = false;
+
+        // Validate up front so we can both surface findings and gate Save.
+        let findings = aclc::validate(&dialog.aclc);
+        let has_errors = aclc::has_errors(&findings);
+
+        egui::Window::new("Settings")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(440.0);
+                ui.heading("Run budgets");
+                ui.label(
+                    "Global limits for `harness build`, stored under [budgets] in \
+                     .harness/guardrails/guardrails.toml.",
+                );
+                ui.add_space(8.0);
+                egui::Grid::new("settings-grid")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Max attempts per task (legacy)");
+                        ui.add(egui::DragValue::new(&mut dialog.max_attempts).range(1..=100));
+                        ui.end_row();
+
+                        ui.label("Max iterations");
+                        ui.add(egui::DragValue::new(&mut dialog.max_iterations).range(1..=100_000));
+                        ui.end_row();
+                    });
+
+                ui.add_space(14.0);
+                ui.separator();
+                ui.heading("ACLC loop control");
+                ui.checkbox(
+                    &mut dialog.aclc_enabled,
+                    "Manage this project's loop with ACLC ([aclc] in harness.toml)",
+                );
+                ui.colored_label(
+                    DIM,
+                    "Orthogonal axes governing whether the agent loops, what survives \
+                     between attempts, and how success is decided.",
+                );
+                ui.add_space(8.0);
+
+                ui.add_enabled_ui(dialog.aclc_enabled, |ui| {
+                    let a = &mut dialog.aclc;
+                    let looping = a.loop_mode == LoopMode::UntilPass;
+
+                    // Preset selector — sets the defining axes, preserving oracle.
+                    let current_preset = Preset::matching(a)
+                        .map(|p| p.name().to_string())
+                        .unwrap_or_else(|| "custom".to_string());
+                    egui::Grid::new("aclc-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 9.0])
+                        .show(ui, |ui| {
+                            ui.label("Preset");
+                            egui::ComboBox::from_id_salt("aclc-preset")
+                                .selected_text(&current_preset)
+                                .show_ui(ui, |ui| {
+                                    for p in Preset::all() {
+                                        if ui
+                                            .selectable_label(current_preset == p.name(), p.name())
+                                            .clicked()
+                                        {
+                                            let oracle = a.oracle.clone();
+                                            *a = p.config();
+                                            a.oracle = oracle;
+                                        }
+                                    }
+                                    let _ =
+                                        ui.selectable_label(current_preset == "custom", "custom");
+                                });
+                            ui.end_row();
+
+                            ui.label("loop");
+                            egui::ComboBox::from_id_salt("aclc-loop")
+                                .selected_text(if looping { "until_pass" } else { "off" })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut a.loop_mode, LoopMode::Off, "off");
+                                    ui.selectable_value(
+                                        &mut a.loop_mode,
+                                        LoopMode::UntilPass,
+                                        "until_pass",
+                                    );
+                                });
+                            ui.end_row();
+
+                            // workspace — applies when looping.
+                            ui.add_enabled_ui(looping, |ui| ui.label("workspace"));
+                            ui.add_enabled_ui(looping, |ui| {
+                                egui::ComboBox::from_id_salt("aclc-ws")
+                                    .selected_text(match a.workspace {
+                                        Workspace::Fresh => "fresh",
+                                        Workspace::Continue => "continue",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut a.workspace,
+                                            Workspace::Continue,
+                                            "continue",
+                                        );
+                                        ui.selectable_value(
+                                            &mut a.workspace,
+                                            Workspace::Fresh,
+                                            "fresh",
+                                        );
+                                    });
+                            });
+                            ui.end_row();
+
+                            // memory — applies when looping.
+                            ui.add_enabled_ui(looping, |ui| ui.label("memory"));
+                            ui.add_enabled_ui(looping, |ui| {
+                                egui::ComboBox::from_id_salt("aclc-mem")
+                                    .selected_text(match a.memory {
+                                        Memory::Off => "off",
+                                        Memory::Replace => "replace",
+                                        Memory::Append => "append",
+                                        Memory::Compact => "compact",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut a.memory, Memory::Off, "off");
+                                        ui.selectable_value(
+                                            &mut a.memory,
+                                            Memory::Replace,
+                                            "replace",
+                                        );
+                                        ui.selectable_value(
+                                            &mut a.memory,
+                                            Memory::Append,
+                                            "append",
+                                        );
+                                        ui.selectable_value(
+                                            &mut a.memory,
+                                            Memory::Compact,
+                                            "compact",
+                                        );
+                                    });
+                            });
+                            ui.end_row();
+
+                            // learning — applies when memory != off.
+                            let learning_on = a.memory != Memory::Off;
+                            ui.add_enabled_ui(learning_on, |ui| ui.label("learning"));
+                            ui.add_enabled_ui(learning_on, |ui| {
+                                egui::ComboBox::from_id_salt("aclc-learn")
+                                    .selected_text(match a.learning {
+                                        Learning::Raw => "raw",
+                                        Learning::Reflection => "reflection",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut a.learning,
+                                            Learning::Reflection,
+                                            "reflection",
+                                        );
+                                        ui.selectable_value(&mut a.learning, Learning::Raw, "raw");
+                                    });
+                            });
+                            ui.end_row();
+
+                            // memory_cap — applies when memory == compact.
+                            let cap_on = a.memory == Memory::Compact;
+                            ui.add_enabled_ui(cap_on, |ui| ui.label("memory_cap"));
+                            ui.add_enabled_ui(cap_on, |ui| {
+                                ui.add(egui::DragValue::new(&mut a.memory_cap).range(1..=100))
+                            });
+                            ui.end_row();
+
+                            // max_attempts — applies when looping.
+                            ui.add_enabled_ui(looping, |ui| ui.label("max_attempts"));
+                            ui.add_enabled_ui(looping, |ui| {
+                                ui.add(egui::DragValue::new(&mut a.max_attempts).range(1..=100))
+                            });
+                            ui.end_row();
+
+                            // on_exhaustion — applies when looping.
+                            ui.add_enabled_ui(looping, |ui| ui.label("on_exhaustion"));
+                            ui.add_enabled_ui(looping, |ui| {
+                                egui::ComboBox::from_id_salt("aclc-exh")
+                                    .selected_text(match a.on_exhaustion {
+                                        OnExhaustion::KeepBest => "keep_best",
+                                        OnExhaustion::KeepLast => "keep_last",
+                                        OnExhaustion::Clean => "clean",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut a.on_exhaustion,
+                                            OnExhaustion::KeepBest,
+                                            "keep_best",
+                                        );
+                                        ui.selectable_value(
+                                            &mut a.on_exhaustion,
+                                            OnExhaustion::KeepLast,
+                                            "keep_last",
+                                        );
+                                        ui.selectable_value(
+                                            &mut a.on_exhaustion,
+                                            OnExhaustion::Clean,
+                                            "clean",
+                                        );
+                                    });
+                            });
+                            ui.end_row();
+
+                            // oracle — applies when looping.
+                            ui.add_enabled_ui(looping, |ui| ui.label("oracle.command"));
+                            ui.add_enabled_ui(looping, |ui| {
+                                let mut cmd = a.oracle.command.clone().unwrap_or_default();
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut cmd)
+                                        .hint_text("e.g. harness eval run <spec>")
+                                        .desired_width(220.0),
+                                );
+                                if resp.changed() {
+                                    a.oracle.command =
+                                        if cmd.trim().is_empty() { None } else { Some(cmd) };
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.add_enabled_ui(looping, |ui| ui.label("oracle.protected"));
+                            ui.add_enabled_ui(looping, |ui| {
+                                ui.checkbox(&mut a.oracle.protected, "")
+                            });
+                            ui.end_row();
+                        });
+                });
+
+                // Live validation output (§6).
+                if dialog.aclc_enabled && !findings.is_empty() {
+                    ui.add_space(8.0);
+                    for f in &findings {
+                        let (color, tag) = match f.severity {
+                            Severity::Error => (FAIL, "error"),
+                            Severity::Warning => (warn_color, "warning"),
+                        };
+                        ui.colored_label(
+                            color,
+                            format!("{tag} [{}]: {}", f.fields.join(", "), f.message),
+                        );
+                    }
+                }
+
+                if let Some(err) = &dialog.error {
+                    ui.add_space(6.0);
+                    ui.colored_label(FAIL, err);
+                }
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let save_block = dialog.aclc_enabled && has_errors;
+                    if ui
+                        .add_enabled(!save_block, egui::Button::new("Save"))
+                        .clicked()
+                    {
+                        save = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    if save_block {
+                        ui.colored_label(FAIL, "fix errors before saving");
+                    }
+                });
+            });
+
+        // Resolve the action after the panel closure so the mutable borrow of
+        // `self.settings` (via `dialog`) is the only one live during the save.
+        let mut done = cancel || !open;
+        if save {
+            let mut result =
+                harness_core::config::save_guardrail_budgets(&root, dialog.max_attempts, dialog.max_iterations);
+            if result.is_ok() && dialog.aclc_enabled {
+                result = harness_core::config::save_aclc_config(&root, &dialog.aclc);
+            }
+            match result {
+                Ok(()) => done = true,
+                Err(e) => dialog.error = Some(format!("Failed to save: {e}")),
+            }
+        }
+        if done {
+            self.settings = None;
         }
     }
 }

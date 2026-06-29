@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::config::load_harness_config;
+use crate::config::{load_guardrails, load_harness_config};
 use crate::spec::{list_specs, load_tasks, spec_dir, Task, TaskStatus};
 use crate::state::{load_state, IterationRecord, LoopState};
 
@@ -53,6 +53,8 @@ pub struct Snapshot {
     pub counts: Counts,
     pub phase_sequence: Vec<String>,
     pub budget: u64,
+    /// Global per-task retry cap (`[budgets].max_attempts_per_task`).
+    pub max_attempts: u32,
     pub recent: Vec<IterationRecord>,
     pub progress_tail: Vec<String>,
     pub last_activity: Option<SystemTime>,
@@ -62,6 +64,7 @@ impl Snapshot {
     pub fn load(root: &Path) -> Self {
         let state = load_state(root).unwrap_or_default();
         let config = load_harness_config(root).unwrap_or_default();
+        let guardrails = load_guardrails(root).unwrap_or_default();
 
         let mut tasks = Vec::new();
         for spec in list_specs(root).unwrap_or_default() {
@@ -104,6 +107,7 @@ impl Snapshot {
             counts,
             phase_sequence: config.loop_config.phase_sequence,
             budget,
+            max_attempts: guardrails.budgets.max_attempts_per_task,
             recent,
             progress_tail,
             last_activity,

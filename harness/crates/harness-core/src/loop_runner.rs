@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
-use crate::config::{load_guardrails, load_harness_config, PhaseConfig};
+use crate::aclc::{self, Learning, OnExhaustion, Workspace};
+use crate::config::{load_guardrails, load_harness_config, resolve_aclc, PhaseConfig};
+use crate::{memory, oracle};
 use crate::hooks::{
     hook_timeout, is_hook_blocking, run_hook, save_hook_log, truncate_output, HookInvocation,
 };
@@ -54,6 +56,49 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
     let config = load_harness_config(root)?;
     let guardrails = load_guardrails(root)?;
     let mut state = load_state(root)?;
+
+    // Resolve the ACLC control surface (§3). When no `[aclc]` table is present
+    // this reconciles the legacy `[loop]`/`[budgets]` fields and the loop keeps
+    // its historical behaviour; `aclc_active` gates every ACLC-specific path.
+    let aclc = resolve_aclc(&config, &guardrails);
+    let aclc_active = config.aclc_present;
+
+    // §6: validate before any agent runs. Warnings are printed; any error
+    // refuses the run (§5.1).
+    if aclc_active {
+        let findings = aclc::validate(&aclc);
+        for f in &findings {
+            let sev = match f.severity {
+                aclc::Severity::Error => "error",
+                aclc::Severity::Warning => "warning",
+            };
+            eprintln!("aclc {sev} [{}]: {}", f.fields.join(", "), f.message);
+        }
+        if aclc::has_errors(&findings) {
+            anyhow::bail!("invalid [aclc] configuration — fix the error(s) above before running");
+        }
+    }
+
+    // The retry cap is per-task: a task is parked as `blocked` once its
+    // `attempts` reaches this many failures. Under ACLC the cap is `max_attempts`
+    // when looping, or 1 for a single pass (`loop = off`).
+    let max_attempts = if aclc_active {
+        if aclc.loops() {
+            aclc.max_attempts
+        } else {
+            1
+        }
+    } else {
+        guardrails.budgets.max_attempts_per_task
+    };
+
+    // Whether a failed attempt resets the workspace (§3.2): ACLC `workspace`
+    // axis when active, else the legacy `reset_on_failure` flag.
+    let reset_on_failure = if aclc_active {
+        aclc.workspace == Workspace::Fresh
+    } else {
+        config.loop_config.reset_on_failure
+    };
 
     // Prune old iteration logs if a retention limit is configured.
     if let Some(max_files) = config.loop_config.max_log_files {
@@ -109,7 +154,7 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
                     Some(e) if !e.is_empty() => format!("{e}\n{note}"),
                     _ => note,
                 });
-                if task.attempts >= task.max_attempts {
+                if task.attempts >= max_attempts {
                     task.status = TaskStatus::Blocked;
                 } else {
                     task.status = TaskStatus::Todo;
@@ -244,6 +289,14 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
         let phase_cfg: Option<&PhaseConfig> =
             current_phase.as_deref().and_then(|p| config.phases.get(p));
 
+        // Load ACLC memory (LEARNINGS.md) for this task, read before the attempt
+        // (§4 step 2). Empty when memory is off or no learnings exist yet.
+        let learnings = if aclc_active && aclc.memory_on() {
+            memory::render_for_prompt(&memory::load_entries(root, &spec_name, &task.id))
+        } else {
+            String::new()
+        };
+
         // Compose + write prompt.
         let is_first = state.iteration_count == 0;
         let phase_template = phase_cfg.and_then(|pc| pc.prompt_template.as_deref());
@@ -255,6 +308,7 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
             is_first,
             current_phase.as_deref(),
             phase_template,
+            &learnings,
         )?;
         let (prompt_file, prompt_hash) = write_prompt_file(&prompt)?;
 
@@ -390,6 +444,31 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
             }
         }
 
+        // ACLC oracle (§4 step 4): the authoritative success decision when the
+        // loop is active. Runs only after the agent and blocking hooks pass; its
+        // exit status decides pass/fail and its output yields a partial score for
+        // ranking (§8.2).
+        let mut oracle_output: Option<String> = None;
+        let mut attempt_score: Option<f64> = None;
+        if all_blocking_passed && agent_exit == 0 && aclc_active && aclc.loops() {
+            if let Some(cmd) = aclc.oracle.command.as_deref() {
+                match oracle::evaluate(root, &working_dir, cmd) {
+                    Ok(o) => {
+                        attempt_score = o.score;
+                        if !o.passed {
+                            all_blocking_passed = false;
+                            eprintln!("error: oracle failed — failing iteration");
+                            oracle_output = Some(o.output);
+                        }
+                    }
+                    Err(e) => {
+                        all_blocking_passed = false;
+                        oracle_output = Some(format!("oracle could not be evaluated: {e:#}"));
+                    }
+                }
+            }
+        }
+
         // Clean up the temp prompt file.
         let _ = std::fs::remove_file(&prompt_file);
 
@@ -460,15 +539,31 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
                 )?;
             }
         } else {
-            // Failed attempt. Restore the working tree to the last clean commit
-            // first, so this broken attempt can't poison the next task.
-            if config.loop_config.reset_on_failure {
+            // Failed attempt. Under ACLC `on_exhaustion = keep_best`, snapshot
+            // this attempt's workspace (and its score) BEFORE any reset, so the
+            // best-ranked attempt can be restored on exhaustion (§8.2).
+            if aclc_active && aclc.loops() && aclc.on_exhaustion == OnExhaustion::KeepBest {
+                if let Some(sha) = git_snapshot_tree(root) {
+                    let _ = record_attempt_snapshot(
+                        root,
+                        &spec_name,
+                        &task.id,
+                        &sha,
+                        attempt_score,
+                    );
+                }
+            }
+
+            // Restore the working tree to the last clean commit (the task's
+            // baseline) when the workspace axis is `fresh`, so a broken attempt
+            // can't poison the next one.
+            if reset_on_failure {
                 match git_reset_workdir(root, &untracked_before) {
                     Ok(()) => append_progress(
                         root,
                         &format!("- [{}] iter {iter}: reset working tree to HEAD", now()),
                     )?,
-                    Err(e) => eprintln!("warning: reset_on_failure skipped: {e:#}"),
+                    Err(e) => eprintln!("warning: workspace reset skipped: {e:#}"),
                 }
             }
 
@@ -519,8 +614,8 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
                     format!("The previous attempt failed its gates{phase_label}:\n\n{gate_detail}")
                 }
             };
-            task_mut.last_failure = Some(detail);
-            if task_mut.attempts >= task_mut.max_attempts {
+            task_mut.last_failure = Some(detail.clone());
+            if task_mut.attempts >= max_attempts {
                 task_mut.status = TaskStatus::Blocked;
                 final_status = TaskStatus::Blocked;
             } else {
@@ -542,6 +637,44 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
                     summary
                 ),
             )?;
+
+            // ── ACLC memory (§4 step 6a/6b): derive a learning entry and update
+            // LEARNINGS.md after a failed attempt. Never on success.
+            if aclc_active && aclc.memory_on() {
+                let signal = oracle_output.as_deref().unwrap_or(detail.as_str());
+                let entry = match aclc.learning {
+                    Learning::Raw => memory::raw_entry(signal),
+                    Learning::Reflection => {
+                        derive_reflection(root, &config, &working_dir, &task, signal)
+                            .unwrap_or_else(|e| {
+                                eprintln!("warning: reflection failed, using raw entry: {e:#}");
+                                memory::raw_entry(signal)
+                            })
+                    }
+                };
+                if let Err(e) = memory::update(
+                    root,
+                    &spec_name,
+                    &task.id,
+                    aclc.memory,
+                    aclc.memory_cap,
+                    &entry,
+                ) {
+                    eprintln!("warning: memory update failed: {e:#}");
+                }
+            }
+
+            // ── ACLC exhaustion (§4 step 7 / §8.1): when the retry budget is
+            // spent, apply the on_exhaustion policy to the returned workspace.
+            if aclc_active && aclc.loops() && final_status == TaskStatus::Blocked {
+                apply_on_exhaustion(
+                    root,
+                    &spec_name,
+                    &task.id,
+                    aclc.on_exhaustion,
+                    &untracked_before,
+                );
+            }
         }
 
         // If we passed all phases, mark the task Done now.
@@ -550,6 +683,9 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
             task_mut.status = TaskStatus::Done;
             task_mut.last_failure = None;
             task_mut.updated_at = Utc::now();
+            // The task is resolved: discard its attempt snapshots (§4 step 5 —
+            // memory is not touched on success, but ranking state is spent).
+            clear_attempt_snapshots(root, &spec_name, &task.id);
         }
 
         // Write iteration record.
@@ -680,6 +816,195 @@ fn git_commit(root: &Path, message: &str) -> Result<Option<String>> {
 }
 
 use crate::util::{git_list_untracked as list_untracked, git_restore_to_head as git_reset_workdir};
+
+// ── ACLC reflection & exhaustion helpers ──────────────────────────────────────
+
+/// Built-in reflection prompt used when the project ships no
+/// `.harness/prompts/reflect.md`. The `{...}` placeholders are filled in by
+/// [`derive_reflection`].
+const DEFAULT_REFLECT_PROMPT: &str = "\
+You are reviewing a failed attempt at a coding task so the NEXT attempt can do better.
+
+Task: {task_title}
+Acceptance:
+{task_acceptance}
+
+The attempt failed with this signal:
+---
+{failure_signal}
+---
+
+Write ONE short, forward-looking, actionable lesson for the next attempt: what to
+do differently. State it as a single imperative claim, not a transcript, not an
+apology. Output only the lesson text, nothing else.";
+
+/// Derive a `reflection` learning entry (§7.3) by invoking the agent on a
+/// reflection prompt and capturing its stdout. The reflection prompt is
+/// application-defined (§10): `.harness/prompts/reflect.md` if present, else the
+/// built-in default. Errors propagate so the caller can fall back to `raw`.
+fn derive_reflection(
+    root: &Path,
+    config: &crate::config::HarnessConfig,
+    working_dir: &str,
+    task: &Task,
+    failure_signal: &str,
+) -> Result<String> {
+    let custom = root.join(".harness").join("prompts").join("reflect.md");
+    let template = if custom.exists() {
+        std::fs::read_to_string(&custom)
+            .with_context(|| format!("failed to read {}", custom.display()))?
+    } else {
+        DEFAULT_REFLECT_PROMPT.to_string()
+    };
+    let prompt = template
+        .replace("{task_title}", &task.title)
+        .replace("{task_acceptance}", &task.acceptance.join("\n"))
+        .replace("{failure_signal}", &memory::raw_entry(failure_signal));
+
+    let (prompt_file, _) = write_prompt_file(&prompt)?;
+    let cmd_str = config
+        .agent
+        .command
+        .replace("{prompt_file}", &prompt_file.to_string_lossy());
+    let wd = root.join(working_dir);
+    let output = if cfg!(windows) {
+        Command::new("cmd").arg("/C").arg(&cmd_str).current_dir(&wd).output()
+    } else {
+        Command::new("sh").arg("-c").arg(&cmd_str).current_dir(&wd).output()
+    };
+    let _ = std::fs::remove_file(&prompt_file);
+    let output = output.with_context(|| format!("failed to launch reflection agent: {cmd_str}"))?;
+    if !output.status.success() {
+        anyhow::bail!("reflection agent exited {:?}", output.status.code());
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        anyhow::bail!("reflection agent produced no output");
+    }
+    Ok(memory::raw_entry(&text))
+}
+
+/// Path to a task's attempt-snapshot sidecar (one JSON record per failed
+/// attempt: the snapshot commit sha and its partial score).
+fn attempt_snapshot_path(root: &Path, spec: &str, task_id: &str) -> std::path::PathBuf {
+    root.join(".harness")
+        .join("logs")
+        .join("attempts")
+        .join(spec)
+        .join(format!("{task_id}.jsonl"))
+}
+
+/// Capture the current working tree as a dangling commit without touching the
+/// tree, index, or any ref (`git stash create`). Returns the commit sha, or
+/// `None` when there is nothing to snapshot or git fails.
+fn git_snapshot_tree(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["stash", "create"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha)
+    }
+}
+
+/// Append `{sha, score}` for a failed attempt to the task's snapshot sidecar.
+fn record_attempt_snapshot(
+    root: &Path,
+    spec: &str,
+    task_id: &str,
+    sha: &str,
+    score: Option<f64>,
+) -> Result<()> {
+    let path = attempt_snapshot_path(root, spec, task_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let line = serde_json::json!({ "sha": sha, "score": score }).to_string();
+    existing.push_str(&line);
+    existing.push('\n');
+    crate::util::atomic_write_str(&path, &existing)
+}
+
+/// Pick the highest-ranked attempt snapshot: by score (absent score ranks last),
+/// ties broken by recency — the later record wins (§8.2).
+fn best_attempt_snapshot(root: &Path, spec: &str, task_id: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(attempt_snapshot_path(root, spec, task_id)).ok()?;
+    let mut best: Option<(f64, String)> = None;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        let sha = v.get("sha").and_then(|s| s.as_str())?.to_string();
+        let score = v.get("score").and_then(|s| s.as_f64()).unwrap_or(-1.0);
+        match &best {
+            // `>=` so a later record with an equal score wins (recency).
+            Some((bs, _)) if score < *bs => {}
+            _ => best = Some((score, sha)),
+        }
+    }
+    best.map(|(_, sha)| sha)
+}
+
+/// Remove a task's attempt-snapshot sidecar.
+fn clear_attempt_snapshots(root: &Path, spec: &str, task_id: &str) {
+    let _ = std::fs::remove_file(attempt_snapshot_path(root, spec, task_id));
+}
+
+/// Apply the `on_exhaustion` policy (§8.1) once a task's retry budget is spent.
+fn apply_on_exhaustion(
+    root: &Path,
+    spec: &str,
+    task_id: &str,
+    policy: OnExhaustion,
+    untracked_before: &HashSet<String>,
+) {
+    match policy {
+        OnExhaustion::KeepLast => {
+            // Leave the workspace as the final attempt left it. (Under
+            // `workspace = fresh` that is the baseline — see §5.3.)
+        }
+        OnExhaustion::Clean => {
+            if let Err(e) = git_reset_workdir(root, untracked_before) {
+                eprintln!("warning: on_exhaustion=clean reset skipped: {e:#}");
+            }
+        }
+        OnExhaustion::KeepBest => match best_attempt_snapshot(root, spec, task_id) {
+            Some(sha) => {
+                let status = Command::new("git")
+                    .args(["checkout", &sha, "--", "."])
+                    .current_dir(root)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => append_progress(
+                        root,
+                        &format!(
+                            "- [{}] on_exhaustion=keep_best: restored best attempt {} for task {task_id}",
+                            now(),
+                            &sha[..sha.len().min(8)]
+                        ),
+                    )
+                    .unwrap_or(()),
+                    _ => eprintln!("warning: keep_best could not restore snapshot {sha}"),
+                }
+            }
+            None => {
+                // No scored failed attempt to restore (e.g. every attempt failed
+                // before producing a tree). Fall back to leaving the tree as-is.
+            }
+        },
+    }
+    clear_attempt_snapshots(root, spec, task_id);
+}
 
 fn print_summary(done: usize, blocked: usize, remaining: usize, elapsed_secs: u64) {
     println!("\n=== harness summary ===");
