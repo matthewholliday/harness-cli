@@ -9,7 +9,6 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::aclc::{self, Learning, OnExhaustion, Workspace};
 use crate::config::{load_guardrails, load_harness_config, resolve_aclc, PhaseConfig};
-use crate::{memory, oracle};
 use crate::hooks::{
     hook_timeout, is_hook_blocking, run_hook, save_hook_log, truncate_output, HookInvocation,
 };
@@ -22,6 +21,7 @@ use crate::state::{
     append_progress, load_state, prune_iteration_logs, save_iteration_record, save_state,
     HookResult, IterationRecord,
 };
+use crate::{memory, oracle};
 
 pub struct RunOptions {
     pub spec_filter: Option<String>,
@@ -544,13 +544,8 @@ pub fn run(root: &Path, opts: RunOptions) -> Result<i32> {
             // best-ranked attempt can be restored on exhaustion (§8.2).
             if aclc_active && aclc.loops() && aclc.on_exhaustion == OnExhaustion::KeepBest {
                 if let Some(sha) = git_snapshot_tree(root) {
-                    let _ = record_attempt_snapshot(
-                        root,
-                        &spec_name,
-                        &task.id,
-                        &sha,
-                        attempt_score,
-                    );
+                    let _ =
+                        record_attempt_snapshot(root, &spec_name, &task.id, &sha, attempt_score);
                 }
             }
 
@@ -868,9 +863,17 @@ fn derive_reflection(
         .replace("{prompt_file}", &prompt_file.to_string_lossy());
     let wd = root.join(working_dir);
     let output = if cfg!(windows) {
-        Command::new("cmd").arg("/C").arg(&cmd_str).current_dir(&wd).output()
+        Command::new("cmd")
+            .arg("/C")
+            .arg(&cmd_str)
+            .current_dir(&wd)
+            .output()
     } else {
-        Command::new("sh").arg("-c").arg(&cmd_str).current_dir(&wd).output()
+        Command::new("sh")
+            .arg("-c")
+            .arg(&cmd_str)
+            .current_dir(&wd)
+            .output()
     };
     let _ = std::fs::remove_file(&prompt_file);
     let output = output.with_context(|| format!("failed to launch reflection agent: {cmd_str}"))?;

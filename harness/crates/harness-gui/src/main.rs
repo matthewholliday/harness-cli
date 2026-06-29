@@ -366,8 +366,7 @@ impl GuiApp {
                         let running = self.is_running();
                         let change = ui.add_enabled(!running, egui::Link::new("change"));
                         if running {
-                            change
-                                .on_hover_text("Stop the running job before switching projects.");
+                            change.on_hover_text("Stop the running job before switching projects.");
                         } else if change
                             .on_hover_text("Open a different project folder")
                             .clicked()
@@ -403,10 +402,11 @@ impl GuiApp {
                         let running = self.is_running();
                         let new_link = ui.add_enabled(
                             !running,
-                            egui::Link::new(
-                                RichText::new("+ new spec")
-                                    .color(if running { DIM } else { ACCENT }),
-                            ),
+                            egui::Link::new(RichText::new("+ new spec").color(if running {
+                                DIM
+                            } else {
+                                ACCENT
+                            })),
                         );
                         if running {
                             new_link.on_hover_text("Wait for the running job to finish.");
@@ -438,21 +438,15 @@ impl GuiApp {
                         return;
                     }
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.with_layout(
-                            egui::Layout::top_down_justified(egui::Align::LEFT),
-                            |ui| {
-                                let specs = self.specs.clone();
-                                for spec in specs {
-                                    let selected =
-                                        self.selected.as_deref() == Some(spec.as_str());
-                                    if ui.selectable_label(selected, &spec).clicked()
-                                        && !selected
-                                    {
-                                        self.select(&spec);
-                                    }
+                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                            let specs = self.specs.clone();
+                            for spec in specs {
+                                let selected = self.selected.as_deref() == Some(spec.as_str());
+                                if ui.selectable_label(selected, &spec).clicked() && !selected {
+                                    self.select(&spec);
                                 }
-                            },
-                        );
+                            }
+                        });
                     });
                 });
             });
@@ -896,10 +890,8 @@ impl GuiApp {
                     match &dialog.file {
                         Some(p) => {
                             ui.add(
-                                egui::Label::new(
-                                    RichText::new(file_label(p)).color(ACCENT),
-                                )
-                                .truncate(),
+                                egui::Label::new(RichText::new(file_label(p)).color(ACCENT))
+                                    .truncate(),
                             )
                             .on_hover_text(p.display().to_string());
                             if ui.link("clear").clicked() {
@@ -1182,8 +1174,11 @@ impl GuiApp {
                                         .desired_width(220.0),
                                 );
                                 if resp.changed() {
-                                    a.oracle.command =
-                                        if cmd.trim().is_empty() { None } else { Some(cmd) };
+                                    a.oracle.command = if cmd.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(cmd)
+                                    };
                                 }
                             });
                             ui.end_row();
@@ -1238,8 +1233,11 @@ impl GuiApp {
         // `self.settings` (via `dialog`) is the only one live during the save.
         let mut done = cancel || !open;
         if save {
-            let mut result =
-                harness_core::config::save_guardrail_budgets(&root, dialog.max_attempts, dialog.max_iterations);
+            let mut result = harness_core::config::save_guardrail_budgets(
+                &root,
+                dialog.max_attempts,
+                dialog.max_iterations,
+            );
             if result.is_ok() && dialog.aclc_enabled {
                 result = harness_core::config::save_aclc_config(&root, &dialog.aclc);
             }
@@ -1313,7 +1311,11 @@ fn new_spec_preview(dialog: &NewSpecDialog) -> String {
     if let Some(path) = &dialog.file {
         format!("spec new {name} --from {}", path.display())
     } else {
-        let brief = dialog.brief.split_whitespace().collect::<Vec<_>>().join(" ");
+        let brief = dialog
+            .brief
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         if brief.is_empty() {
             format!("spec new {name} --brief …")
         } else {

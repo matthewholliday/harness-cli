@@ -18,6 +18,11 @@ pub struct SpecManifestEntry {
     /// Relative-to-root path → SHA-256 of file content, for every file owned
     /// by this spec (expanded from the spec's `owns` globs at record time).
     pub owned_files: HashMap<String, String>,
+    /// The model ID pinned in the agent command at the time this baseline was
+    /// recorded (e.g. "claude-opus-4-8"). Empty for older manifests or when no
+    /// model was pinned. Lets `check` warn when the generating model has drifted.
+    #[serde(default)]
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -137,16 +142,44 @@ pub fn record_spec(root: &Path, spec_name: &str) -> Result<()> {
         owned_files.insert(rel, hash);
     }
 
+    let model_id = crate::config::load_harness_config(root)
+        .map(|c| crate::config::model_id_from_command(&c.agent.command))
+        .unwrap_or_default();
+
     let mut manifest = load_manifest(root)?;
     manifest.specs.insert(
         spec_name.to_string(),
         SpecManifestEntry {
             spec_inputs_hash,
             owned_files,
+            model_id,
         },
     );
     save_manifest(root, &manifest)?;
     Ok(())
+}
+
+/// Advisory model-drift check: returns `(recorded, current)` model IDs when the
+/// model pinned in the agent command differs from the one that generated this
+/// spec's recorded baseline. `None` when they match, when no model was recorded
+/// (older baseline), or when the current command pins no model. This is a
+/// warning signal only — it never blocks a commit, unlike ownership drift.
+pub fn model_drift(root: &Path, spec_name: &str) -> Result<Option<(String, String)>> {
+    let manifest = load_manifest(root)?;
+    let Some(entry) = manifest.specs.get(spec_name) else {
+        return Ok(None);
+    };
+    if entry.model_id.is_empty() {
+        return Ok(None);
+    }
+    let current = crate::config::load_harness_config(root)
+        .map(|c| crate::config::model_id_from_command(&c.agent.command))
+        .unwrap_or_default();
+    if !current.is_empty() && current != entry.model_id {
+        Ok(Some((entry.model_id.clone(), current)))
+    } else {
+        Ok(None)
+    }
 }
 
 // ── check ──────────────────────────────────────────────────────────────────────

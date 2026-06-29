@@ -307,16 +307,24 @@ reviewer_command = "claude --model claude-opus-4-8 -p < {prompt_file}"
 harness check tido --determinism
 ```
 
-The harness runs the full rebuild sequence twice. Both runs must pass the evals. If both pass but the code looks structurally different, that's fine — behavior is pinned by the evals. If either run fails, the spec is underspecified.
+The harness runs the full rebuild sequence N times (`--passes N`, default 2). Every run must pass the evals — that's *behavioral* convergence. On top of that, the harness scores how textually similar the regenerated artifacts are to each other (line-level similarity after normalizing whitespace), so Maya can see whether the spec is tight enough to produce not just *correct* code but *the same* code each time.
 
 ```
 [regen]   Regeneration complete.
-[regen-2] Second pass (determinism probe)…
+[regen-2] Pass 2 of 2 (determinism probe)…
 [regen-2] Regeneration complete.
-Determinism verdict: CONVERGED (both passes passed evals)
+
+=== Determinism Report: tido (2 passes) ===
+Files (union): 3
+  src/main.rs                  near-identical   0.98
+  src/model.rs                 identical        1.00
+  src/storage.rs               minor-drift      0.88
+Byte-identical files: 1/3
+Overall convergence: 0.95 (line-weighted)
+Verdict: CONVERGED  (behavior: CONVERGED — every pass passed evals)
 ```
 
-CONVERGED. The spec is tight enough that two independent generations both produce passing implementations. This is the readiness signal — it means the spec is regenerable with confidence.
+CONVERGED. The spec is tight enough that independent generations both pass evals *and* land on nearly the same artifact. A low convergence score with passing evals is the signal to push more structure into the spec (file layout, naming, signatures) — the artifact variance is telling Maya where the spec leaves the model too much freedom.
 
 ---
 
@@ -363,7 +371,7 @@ That's it. Everything else — pace layers, determinism probes, round-trip sync 
 | `harness check <name> --accept` | Snapshot current code as the baseline |
 | `harness rebuild <name>` | Burn owned files, re-render from spec, gate on evals |
 | `harness rebuild <name> --only "src/storage/**"` | Rebuild a subset of owned files |
-| `harness check <name> --determinism` | Determinism probe (rebuild twice) |
+| `harness check <name> --determinism` | Determinism probe: rebuild N times (`--passes N`, default 2) and report artifact-convergence score |
 | `harness check <name> --reverse` | Reconstruct spec from code, emit convergence verdict |
 | `harness eval draft <name>` | Draft reviewable eval stubs from acceptance criteria (independent reviewer model) |
 | `harness eval run <name>` | Run the oracle against current code |

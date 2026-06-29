@@ -66,9 +66,17 @@ pub fn parse_score(output: &str) -> Option<f64> {
 pub fn evaluate(root: &Path, working_dir: &str, command: &str) -> Result<OracleOutcome> {
     let wd = root.join(working_dir);
     let output = if cfg!(windows) {
-        Command::new("cmd").arg("/C").arg(command).current_dir(&wd).output()
+        Command::new("cmd")
+            .arg("/C")
+            .arg(command)
+            .current_dir(&wd)
+            .output()
     } else {
-        Command::new("sh").arg("-c").arg(command).current_dir(&wd).output()
+        Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(&wd)
+            .output()
     }
     .with_context(|| format!("failed to launch oracle: {command}"))?;
 

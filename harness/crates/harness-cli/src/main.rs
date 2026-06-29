@@ -75,9 +75,12 @@ enum Commands {
         /// Reconstruct the spec from code and report convergence (advisory).
         #[arg(long)]
         reverse: bool,
-        /// Rebuild twice and compare eval results (spec-tightness probe; destructive).
+        /// Rebuild N times and report artifact convergence (spec-tightness probe; destructive).
         #[arg(long)]
         determinism: bool,
+        /// Number of regeneration passes for --determinism (default 2, min 2).
+        #[arg(long)]
+        passes: Option<usize>,
         /// Accept the current code as this spec's baseline (escape hatch).
         #[arg(long)]
         accept: bool,
@@ -384,17 +387,18 @@ fn dispatch(cli: Cli) -> Result<i32> {
             force,
         } => {
             let root = find_project_root()?;
-            cmd_rebuild(&root, spec, all, only.as_deref(), force, false)
+            cmd_rebuild(&root, spec, all, only.as_deref(), force, 1)
         }
         Commands::Check {
             spec,
             all,
             reverse,
             determinism,
+            passes,
             accept,
         } => {
             let root = find_project_root()?;
-            cmd_check(&root, spec, all, reverse, determinism, accept)
+            cmd_check(&root, spec, all, reverse, determinism, passes, accept)
         }
         Commands::Spec { cmd } => {
             let root = find_project_root()?;
@@ -458,7 +462,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 false,
                 component.as_deref(),
                 force_boundary,
-                twice,
+                if twice { 2 } else { 1 },
             )
         }
         Commands::Manifest { cmd } => {
@@ -466,11 +470,11 @@ fn dispatch(cli: Cli) -> Result<i32> {
             match cmd {
                 ManifestCmd::Record { spec, all } => {
                     deprecate("manifest record", "check --accept");
-                    cmd_check(&root, spec, all, false, false, true)
+                    cmd_check(&root, spec, all, false, false, None, true)
                 }
                 ManifestCmd::Check { spec, all } => {
                     deprecate("manifest check", "check");
-                    cmd_check(&root, spec, all, false, false, false)
+                    cmd_check(&root, spec, all, false, false, None, false)
                 }
             }
         }
@@ -524,19 +528,20 @@ fn cmd_build(
     )
 }
 
-/// Burn & re-render one or more specs. `twice` runs the determinism probe.
+/// Burn & re-render one or more specs. `passes >= 2` runs the determinism
+/// probe (regenerate that many times and report artifact convergence).
 fn cmd_rebuild(
     root: &Path,
     spec: Option<String>,
     all: bool,
     only: Option<&str>,
     force: bool,
-    twice: bool,
+    passes: usize,
 ) -> Result<i32> {
     let specs = resolve_specs(root, spec, all, false)?;
     let mut worst = 0;
     for name in &specs {
-        let code = cmd_regen(root, name, only, twice, force)?;
+        let code = cmd_regen(root, name, only, passes, force)?;
         if code != 0 {
             worst = code;
         }
@@ -567,6 +572,7 @@ fn cmd_check(
     all: bool,
     reverse: bool,
     determinism: bool,
+    passes: Option<usize>,
     accept: bool,
 ) -> Result<i32> {
     let specs = resolve_specs(root, spec, all, true)?;
@@ -592,11 +598,12 @@ fn cmd_check(
         return Ok(0);
     }
 
-    // Determinism: rebuild twice and compare eval results (destructive).
+    // Determinism: rebuild N times and report artifact convergence (destructive).
     if determinism {
+        let n = passes.unwrap_or(2).max(2);
         let mut worst = 0;
         for name in &specs {
-            let code = cmd_regen(root, name, None, true, false)?;
+            let code = cmd_regen(root, name, None, n, false)?;
             if code != 0 {
                 worst = code;
             }
@@ -624,6 +631,14 @@ fn cmd_check(
                 spec_ok = false;
                 println!("✗ {name}: check error: {e:#}");
             }
+        }
+        // Advisory: warn (don't fail) when the generating model has drifted
+        // since this baseline was recorded. A model upgrade is a determinism
+        // hazard worth surfacing, but it must not block commits.
+        if let Ok(Some((recorded, current))) = harness_core::manifest::model_drift(root, name) {
+            println!(
+                "⚠ {name}: model drift — baseline generated with {recorded}, command now pins {current}; rebuild to re-pin"
+            );
         }
         if spec_ok {
             println!("✓ {name}: consistent");
@@ -796,7 +811,7 @@ fn cmd_spec(root: &Path, cmd: SpecCmd) -> Result<i32> {
         }
         SpecCmd::Validate { name, all } => {
             deprecate("spec validate", "check");
-            cmd_check(root, name, all, false, false, false)
+            cmd_check(root, name, all, false, false, None, false)
         }
         SpecCmd::Sync {
             name,
@@ -1908,10 +1923,8 @@ fn cmd_explain(
     let is_first = state.iteration_count == 0;
 
     // Mirror the loop: show ACLC memory if it is active for this project.
-    let aclc = harness_core::config::resolve_aclc(
-        &config,
-        &harness_core::config::load_guardrails(root)?,
-    );
+    let aclc =
+        harness_core::config::resolve_aclc(&config, &harness_core::config::load_guardrails(root)?);
     let learnings = if config.aclc_present && aclc.memory_on() {
         harness_core::memory::render_for_prompt(&harness_core::memory::load_entries(
             root, &spec_name, &task.id,
@@ -2169,7 +2182,10 @@ fn cmd_aclc(root: &Path, cmd: AclcCmd) -> Result<i32> {
                 eprintln!("{sev} [{}]: {}", f.fields.join(", "), f.message);
             }
             save_aclc_config(root, &aclc)?;
-            println!("✓ wrote preset '{}' to .harness/harness.toml", preset.name());
+            println!(
+                "✓ wrote preset '{}' to .harness/harness.toml",
+                preset.name()
+            );
             if aclc::has_errors(&findings) {
                 println!(
                     "  add an oracle with `harness aclc preset {} --oracle \"<cmd>\"` before running",
@@ -2266,9 +2282,10 @@ fn cmd_doctor(root: &Path) -> Result<i32> {
                 !harness_core::aclc::has_errors(&findings),
                 "run `harness aclc validate` for details"
             );
-            for f in findings.iter().filter(|f| {
-                matches!(f.severity, harness_core::aclc::Severity::Warning)
-            }) {
+            for f in findings
+                .iter()
+                .filter(|f| matches!(f.severity, harness_core::aclc::Severity::Warning))
+            {
                 println!("  ⚠ aclc [{}]: {}", f.fields.join(", "), f.message);
             }
         }
@@ -2331,7 +2348,7 @@ fn cmd_regen(
     root: &Path,
     spec_name: &str,
     component: Option<&str>,
-    twice: bool,
+    passes: usize,
     force_boundary: bool,
 ) -> Result<i32> {
     let dir = spec_dir(root, spec_name);
@@ -2593,25 +2610,194 @@ fn cmd_regen(
         return Ok(exit1);
     }
 
-    if twice {
-        // Phase 5 determinism probe: regenerate a second time and compare eval results.
-        println!("\n[regen-2] Second pass (determinism probe)…");
-        let (exit2, log2) = run_regen("regen-2")?;
-        if exit2 != 0 {
-            eprintln!("warning: second regeneration failed — spec may be underspecified");
-            println!("Determinism verdict: UNDERSPECIFIED (second pass failed)");
-            return Ok(exit2);
-        }
-        println!("Determinism verdict: CONVERGED (both passes passed evals)");
-        if !log2.is_empty() {
-            println!("Second pass hooks:");
-            for l in &log2 {
-                println!("{l}");
+    if passes >= 2 {
+        // Determinism probe: regenerate N times total and measure how close the
+        // resulting artifacts are to each other. Each pass must independently
+        // pass evals (behavioral convergence); on top of that we score the
+        // textual similarity of the owned files (artifact convergence).
+        let mut snapshots = vec![snapshot_owned(root, &to_burn)];
+        for i in 2..=passes {
+            println!("\n[regen-{i}] Pass {i} of {passes} (determinism probe)…");
+            let (exit_n, _log_n) = run_regen(&format!("regen-{i}"))?;
+            if exit_n != 0 {
+                eprintln!("warning: pass {i} failed evals — spec may be underspecified");
+                println!("Determinism verdict: UNDERSPECIFIED (pass {i} failed evals)");
+                return Ok(exit_n);
             }
+            snapshots.push(snapshot_owned(root, &to_burn));
         }
+        report_convergence(spec_name, &snapshots);
     }
 
     Ok(0)
+}
+
+/// Read every owned file into a path→content map for one regeneration pass.
+/// Missing files (a pass that didn't recreate one) are simply absent from the
+/// map, which the convergence report treats as maximal divergence for that file.
+fn snapshot_owned(root: &Path, owned: &[String]) -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    for rel in owned {
+        if let Ok(content) = std::fs::read_to_string(root.join(rel)) {
+            map.insert(rel.clone(), content);
+        }
+    }
+    map
+}
+
+/// Normalize a file into comparable lines: strip trailing whitespace and drop
+/// fully-blank lines, so cosmetic-only differences (trailing spaces, blank-line
+/// churn) don't count against convergence.
+fn normalize_lines(content: &str) -> Vec<&str> {
+    content
+        .lines()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Length of the longest common subsequence of two line slices (classic DP).
+/// Guarded against pathologically large inputs by the caller.
+fn lcs_len(a: &[&str], b: &[&str]) -> usize {
+    let (n, m) = (a.len(), b.len());
+    let mut prev = vec![0usize; m + 1];
+    let mut curr = vec![0usize; m + 1];
+    for i in 1..=n {
+        for j in 1..=m {
+            curr[j] = if a[i - 1] == b[j - 1] {
+                prev[j - 1] + 1
+            } else {
+                prev[j].max(curr[j - 1])
+            };
+        }
+        std::mem::swap(&mut prev, &mut curr);
+        curr.iter_mut().for_each(|x| *x = 0);
+    }
+    prev[m]
+}
+
+/// Line-level similarity of two files in [0.0, 1.0]: `2·LCS / (|a| + |b|)` over
+/// normalized lines. 1.0 means identical (after normalization); 0.0 means no
+/// shared lines. Two empty files are considered identical.
+fn file_similarity(a: &str, b: &str) -> f64 {
+    let la = normalize_lines(a);
+    let lb = normalize_lines(b);
+    let total = la.len() + lb.len();
+    if total == 0 {
+        return 1.0;
+    }
+    // Avoid O(n·m) blowup on very large generated files; fall back to a cheap
+    // multiset overlap (Jaccard on line bags) when either side is huge.
+    let lcs = if la.len() > 4000 || lb.len() > 4000 {
+        let mut bag: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+        for l in &la {
+            *bag.entry(*l).or_default() += 1;
+        }
+        let mut shared = 0usize;
+        for l in &lb {
+            if let Some(c) = bag.get_mut(l) {
+                if *c > 0 {
+                    *c -= 1;
+                    shared += 1;
+                }
+            }
+        }
+        shared
+    } else {
+        lcs_len(&la, &lb)
+    };
+    (2.0 * lcs as f64) / total as f64
+}
+
+/// Compare N regeneration snapshots and print an artifact-convergence report.
+/// Every later pass is scored against pass 1 (the reference); each file's score
+/// is the worst it achieves across passes, and the overall score is a
+/// line-count-weighted mean so large files dominate proportionally.
+fn report_convergence(spec_name: &str, snapshots: &[std::collections::BTreeMap<String, String>]) {
+    let n = snapshots.len();
+    let reference = &snapshots[0];
+
+    // Union of all paths seen across passes, so a file that appears in some
+    // passes but not others is visible (and scored 0 for the missing ones).
+    let mut paths: Vec<&String> = snapshots
+        .iter()
+        .flat_map(|s| s.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    paths.sort();
+
+    println!("\n=== Determinism Report: {spec_name} ({n} passes) ===");
+    println!("Files (union): {}", paths.len());
+
+    let mut weighted_sum = 0.0f64;
+    let mut weight_total = 0.0f64;
+    let mut byte_identical = 0usize;
+
+    for path in &paths {
+        // Per-file score = min similarity of any pass vs the reference pass.
+        let mut min_sim = 1.0f64;
+        let mut present_everywhere = true;
+        let ref_content = reference.get(*path);
+        let mut all_byte_identical = ref_content.is_some();
+        for snap in snapshots {
+            match (ref_content, snap.get(*path)) {
+                (Some(a), Some(b)) => {
+                    min_sim = min_sim.min(file_similarity(a, b));
+                    if a != b {
+                        all_byte_identical = false;
+                    }
+                }
+                _ => {
+                    present_everywhere = false;
+                    all_byte_identical = false;
+                    min_sim = 0.0;
+                }
+            }
+        }
+        if all_byte_identical {
+            byte_identical += 1;
+        }
+
+        let label = if !present_everywhere {
+            "missing-in-some"
+        } else if all_byte_identical {
+            "identical"
+        } else if min_sim >= 0.95 {
+            "near-identical"
+        } else if min_sim >= 0.75 {
+            "minor-drift"
+        } else {
+            "divergent"
+        };
+        println!("  {:<28} {:<16} {:.2}", path, label, min_sim);
+
+        // Weight by the reference file's line count (or 1 so missing files still
+        // register a non-zero penalty).
+        let weight = ref_content
+            .map(|c| normalize_lines(c).len().max(1))
+            .unwrap_or(1) as f64;
+        weighted_sum += min_sim * weight;
+        weight_total += weight;
+    }
+
+    let overall = if weight_total > 0.0 {
+        weighted_sum / weight_total
+    } else {
+        1.0
+    };
+
+    let verdict = if overall >= 0.95 {
+        "CONVERGED"
+    } else if overall >= 0.75 {
+        "PARTIAL"
+    } else {
+        "DIVERGENT"
+    };
+
+    println!("Byte-identical files: {}/{}", byte_identical, paths.len());
+    println!("Overall convergence: {overall:.2} (line-weighted)");
+    println!("Verdict: {verdict}  (behavior: CONVERGED — every pass passed evals)");
 }
 
 fn git_head_sha(root: &Path) -> Option<String> {
@@ -2865,7 +3051,10 @@ const DRAFT_TASKS_PROMPT: &str = include_str!("../templates/draft-tasks.md");
 const DRAFT_EVAL_PROMPT: &str = include_str!("../templates/draft-eval.md");
 
 const HARNESS_TOML: &str = r#"[agent]
-command = "claude -p --dangerously-skip-permissions < {prompt_file}"
+# Pin the exact model (not a moving alias like "claude-3-5-sonnet-latest") so a
+# model upgrade can't silently change generated code. The harness records this
+# ID in the manifest and `harness check` warns when it drifts from the baseline.
+command = "claude -p --model claude-opus-4-8 --dangerously-skip-permissions < {prompt_file}"
 working_dir = "."
 reviewer_command = ""
 
@@ -3063,5 +3252,50 @@ mod ref_id_tests {
         assert!(!references_id("only R-10 and R-12 here", "R-1"));
         assert!(!references_id("R-100", "R-1"));
         assert!(!references_id("xR-1", "R-1"));
+    }
+}
+
+#[cfg(test)]
+mod convergence_tests {
+    use super::file_similarity;
+
+    #[test]
+    fn identical_files_score_one() {
+        let s = "fn main() {\n    println!(\"hi\");\n}\n";
+        assert_eq!(file_similarity(s, s), 1.0);
+    }
+
+    #[test]
+    fn cosmetic_only_differences_are_ignored() {
+        // Trailing whitespace and blank-line churn are normalized away.
+        let a = "fn main() {\n    work();\n}\n";
+        let b = "fn main() {   \n\n    work();\n}\n\n";
+        assert_eq!(file_similarity(a, b), 1.0);
+    }
+
+    #[test]
+    fn unrelated_files_score_low() {
+        let a = "alpha\nbravo\ncharlie\ndelta\n";
+        let b = "one\ntwo\nthree\nfour\n";
+        assert!(
+            file_similarity(a, b) < 0.25,
+            "got {}",
+            file_similarity(a, b)
+        );
+    }
+
+    #[test]
+    fn partial_overlap_is_between() {
+        // Three of four lines shared → high but not perfect similarity.
+        let a = "a\nb\nc\nd\n";
+        let b = "a\nb\nc\nX\n";
+        let sim = file_similarity(a, b);
+        assert!(sim > 0.7 && sim < 1.0, "got {sim}");
+    }
+
+    #[test]
+    fn two_empty_files_are_identical() {
+        assert_eq!(file_similarity("", ""), 1.0);
+        assert_eq!(file_similarity("\n\n", ""), 1.0);
     }
 }
