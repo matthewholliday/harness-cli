@@ -675,6 +675,17 @@ fn cmd_init(root: &Path, _from_specs: bool, force: bool) -> Result<()> {
         }
     }
 
+    // Convenience launcher for the desktop GUI, rooted at the project so it
+    // reads this project's `.specs/`.
+    let run_gui = root.join("run-harness-gui.sh");
+    if run_gui.exists() && !force {
+        println!("  skip   {} (exists)", run_gui.display());
+    } else {
+        std::fs::write(&run_gui, RUN_GUI_SH)?;
+        make_executable(&run_gui)?;
+        println!("  create {}", run_gui.display());
+    }
+
     // Phase 2: create the top-level evals/ directory.
     let evals_dir = root.join("evals");
     if !evals_dir.exists() {
@@ -2769,6 +2780,23 @@ const PRE_COMMIT_HOOK: &str = r#"#!/usr/bin/env sh
 # Installed by `harness init` — gates commits on spec↔code consistency.
 # Fails if any spec-owned file was hand-edited or the spec changed without rebuild.
 harness check --all
+"#;
+
+const RUN_GUI_SH: &str = r#"#!/usr/bin/env sh
+# Installed by `harness init` — launches the spec-authoring desktop GUI rooted
+# at this project. The GUI reads `.specs/` relative to its working directory, so
+# we cd into this script's own directory (the project root) before launching.
+set -e
+cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+# Prefer an installed `harness-gui` on PATH; otherwise build and run it from a
+# Cargo workspace that provides the `harness-gui` package (e.g. when dogfooding
+# inside the harness repo).
+if command -v harness-gui >/dev/null 2>&1; then
+  exec harness-gui "$@"
+else
+  exec cargo run -p harness-gui "$@"
+fi
 "#;
 
 const GUARDRAILS_TOML: &str = r#"[budgets]

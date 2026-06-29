@@ -8,7 +8,7 @@
       // reads `.specs/` relative to its working directory, so it shows the
       // specs of whatever project you have open.
       "label": "Run harness GUI",
-      "type": "shell",
+      "type": "process",
       "command": "cargo",
       "args": [
         "run",
@@ -26,7 +26,7 @@
       // Dogfood against the bundled sandbox project (has the `calculator` spec),
       // so the accordion is populated on launch.
       "label": "Run harness GUI (sandbox project)",
-      "type": "shell",
+      "type": "process",
       "command": "cargo",
       "args": [
         "run",
