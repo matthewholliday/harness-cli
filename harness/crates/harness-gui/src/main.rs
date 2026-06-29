@@ -243,13 +243,15 @@ impl GuiApp {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.heading("Specs");
-                    if ui
-                        .small_button("⟳")
-                        .on_hover_text("Reload from disk")
-                        .clicked()
-                    {
-                        self.reload();
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .link("refresh")
+                            .on_hover_text("Reload from disk")
+                            .clicked()
+                        {
+                            self.reload();
+                        }
+                    });
                 });
                 ui.separator();
                 if self.specs.is_empty() {
@@ -286,19 +288,20 @@ impl GuiApp {
             ui.horizontal(|ui| {
                 ui.heading(&spec);
                 ui.add_space(8.0);
-                ui.colored_label(DIM, "requirements → design → tasks → code → evals");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button("⟳ Refresh")
+                        .link("refresh")
                         .on_hover_text("Reload from disk")
                         .clicked()
                     {
                         reload_requested = true;
                     }
-                    if ui.button("Close all").clicked() {
+                    ui.colored_label(DIM, "·");
+                    if ui.link("close all").clicked() {
                         close_all = true;
                     }
-                    if ui.button("Open all").clicked() {
+                    ui.colored_label(DIM, "·");
+                    if ui.link("open all").clicked() {
                         open_all = true;
                     }
                 });
